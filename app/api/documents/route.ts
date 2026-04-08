@@ -17,7 +17,7 @@ async function ensureDocumentSchema(connection: mysql.Connection) {
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS dts_documents (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        document_name VARCHAR(255) NOT NULL,
+        tracking_code VARCHAR(255) NOT NULL,
         created_at DATETIME NOT NULL,
         archived TINYINT(1) NOT NULL DEFAULT 0,
         archived_at DATETIME NULL
@@ -30,8 +30,8 @@ async function ensureDocumentSchema(connection: mysql.Connection) {
     );
     const alterClauses: string[] = [];
 
-    if (!existingColumns.has('document_name')) {
-      alterClauses.push('ADD COLUMN document_name VARCHAR(255) NOT NULL');
+    if (!existingColumns.has('tracking_code')) {
+      alterClauses.push('ADD COLUMN tracking_code VARCHAR(255) NOT NULL');
     }
     if (!existingColumns.has('created_at')) {
       alterClauses.push('ADD COLUMN created_at DATETIME NOT NULL');
@@ -65,9 +65,7 @@ export async function GET(request: NextRequest) {
     connection = await getConnection();
     await ensureDocumentSchema(connection);
 
-    await connection.execute(
-      "UPDATE dts_documents SET archived = 1, archived_at = NOW() WHERE archived = 0 AND created_at < DATE_SUB(NOW(), INTERVAL 5 YEAR)"
-    );
+    // Removed automatic archiving logic - documents will only be archived manually
 
     const [countRows] = await connection.execute(
       'SELECT COUNT(*) AS totalDocuments, SUM(archived = 0) AS activeCount, SUM(archived = 1) AS archivedCount FROM dts_documents'
@@ -127,7 +125,7 @@ export async function POST(request: NextRequest) {
     connection = await getConnection();
     await ensureDocumentSchema(connection);
     const [result] = await connection.execute(
-      'INSERT INTO dts_documents (document_name, created_at, archived) VALUES (?, NOW(), 0)',
+      'INSERT INTO dts_documents (tracking_code, created_at, archived) VALUES (?, NOW(), 0)',
       [name]
     );
 

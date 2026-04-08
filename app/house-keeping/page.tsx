@@ -7,13 +7,15 @@ interface Document {
   name: string;
   createdAt: string;
   archived: boolean;
+  archivedAt: string | null;
 }
 
 interface DocumentRow {
   id: number;
-  document_name: string;
+  tracking_code: string; 
   created_at: string;
   archived: number;
+  archived_at: string | null;
 }
 
 interface DocumentsResponse {
@@ -35,6 +37,17 @@ export default function HouseKeepingPage() {
   const [activeCount, setActiveCount] = useState(0);
   const [archivedCount, setArchivedCount] = useState(0);
 
+  // FILTER STATES
+  const [selectedYear, setSelectedYear] = useState('');
+  const [appliedYearFilter, setAppliedYearFilter] = useState('');
+
+  // MULTI SELECT
+  const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
+
+  // MODAL STATES
+  const [showArchiveYearModal, setShowArchiveYearModal] = useState(false);
+  const [archiveYear, setArchiveYear] = useState('');
+
   const fetchDocuments = async (
     page: number,
     archived: boolean
@@ -43,6 +56,7 @@ export default function HouseKeepingPage() {
       const response = await fetch(
         `/api/documents?page=${page}&archived=${archived ? 1 : 0}`
       );
+
       const payload = await response.json();
 
       if (!response.ok) {
@@ -61,6 +75,7 @@ export default function HouseKeepingPage() {
     archived = activeTab === 'archived'
   ) => {
     const payload = await fetchDocuments(page, archived);
+
     if (!payload) {
       setDocuments([]);
       setTotalDocuments(0);
@@ -71,9 +86,10 @@ export default function HouseKeepingPage() {
 
     const docs = payload.documents.map((row) => ({
       id: String(row.id),
-      name: row.document_name,
+      name: row.tracking_code,
       createdAt: row.created_at,
       archived: Boolean(row.archived),
+      archivedAt: row.archived_at,
     }));
 
     setDocuments(docs);
@@ -85,6 +101,7 @@ export default function HouseKeepingPage() {
 
   useEffect(() => {
     loadDocuments(1, activeTab === 'archived');
+    setSelectedDocs([]);
   }, [activeTab]);
 
   const addDocument = async () => {
@@ -100,6 +117,7 @@ export default function HouseKeepingPage() {
       });
 
       const payload = await response.json();
+
       if (!response.ok) {
         throw new Error(payload?.message ?? 'Failed to create document.');
       }
@@ -111,7 +129,11 @@ export default function HouseKeepingPage() {
     }
   };
 
-  const patchDocument = async (id: string, archived: boolean) => {
+  const patchDocument = async (
+    id: string,
+    archived: boolean,
+    reload = true
+  ) => {
     try {
       const response = await fetch('/api/documents', {
         method: 'PATCH',
@@ -122,11 +144,14 @@ export default function HouseKeepingPage() {
       });
 
       const payload = await response.json();
+
       if (!response.ok) {
         throw new Error(payload?.message ?? 'Failed to update document.');
       }
 
-      await loadDocuments(currentPage, activeTab === 'archived');
+      if (reload) {
+        await loadDocuments(currentPage, activeTab === 'archived');
+      }
     } catch (error) {
       console.error('patchDocument error:', error);
     }
@@ -140,18 +165,89 @@ export default function HouseKeepingPage() {
     await patchDocument(id, false);
   };
 
+  const archiveSelectedDocuments = async () => {
+    if (selectedDocs.length === 0) return;
+
+    await Promise.all(
+      selectedDocs.map((id) => patchDocument(id, true, false))
+    );
+
+    setSelectedDocs([]);
+    await loadDocuments(currentPage, false);
+  };
+
+  const archiveAllByYear = async () => {
+    if (!archiveYear) return;
+
+    const docsToArchive = documents.filter((doc) => {
+      const year = new Date(doc.createdAt).getFullYear().toString();
+      return year === archiveYear;
+    });
+
+    if (docsToArchive.length === 0) {
+      setShowArchiveYearModal(false);
+      return;
+    }
+
+    await Promise.all(
+      docsToArchive.map((doc) =>
+        patchDocument(doc.id, true, false)
+      )
+    );
+
+    setShowArchiveYearModal(false);
+    setArchiveYear('');
+    setSelectedDocs([]);
+    await loadDocuments(currentPage, false);
+  };
+
   const handleTabChange = (tab: 'active' | 'archived') => {
     setActiveTab(tab);
     setCurrentPage(1);
+    setSelectedDocs([]);
   };
 
   const pageCount = Math.ceil(
     (activeTab === 'archived' ? archivedCount : activeCount) / PAGE_SIZE
   );
+
   const hasPreviousPage = currentPage > 1;
   const hasNextPage = currentPage < pageCount;
 
   const pageDocuments = documents;
+
+  const availableYears = useMemo(() => {
+    const years = new Set(
+      pageDocuments.map((doc) =>
+        new Date(doc.createdAt).getFullYear().toString()
+      )
+    );
+
+    return Array.from(years).sort((a, b) => Number(b) - Number(a));
+  }, [pageDocuments]);
+
+  const filteredDocuments = useMemo(() => {
+    if (activeTab !== 'active') return pageDocuments;
+
+    return pageDocuments.filter((doc) => {
+      if (!appliedYearFilter) return true;
+
+      const docYear = new Date(doc.createdAt)
+        .getFullYear()
+        .toString();
+
+      return docYear === appliedYearFilter;
+    });
+  }, [pageDocuments, appliedYearFilter, activeTab]);
+
+  const applyYearFilter = () => {
+    setAppliedYearFilter(selectedYear);
+  };
+
+  const resetYearFilter = () => {
+    setSelectedYear('');
+    setAppliedYearFilter('');
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -166,18 +262,21 @@ export default function HouseKeepingPage() {
                 Simple archive manager
               </h1>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                Add documents, archive manually, and let the system auto-archive any file older than five years.
+                Add documents and archive them manually as needed.
               </p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
+
+            <div className="grid gap-3 sm:grid-cols-[1.2fr_1fr_1fr]">
               <div className="rounded-3xl bg-slate-50 p-4 shadow-sm ring-1 ring-slate-200">
                 <p className="text-sm text-slate-500">Total Documents</p>
                 <p className="mt-2 text-2xl font-semibold">{totalDocuments}</p>
               </div>
+
               <div className="rounded-3xl bg-slate-50 p-4 shadow-sm ring-1 ring-slate-200">
                 <p className="text-sm text-slate-500">Active</p>
                 <p className="mt-2 text-2xl font-semibold">{activeCount}</p>
               </div>
+
               <div className="rounded-3xl bg-slate-50 p-4 shadow-sm ring-1 ring-slate-200">
                 <p className="text-sm text-slate-500">Archived</p>
                 <p className="mt-2 text-2xl font-semibold">{archivedCount}</p>
@@ -193,8 +292,11 @@ export default function HouseKeepingPage() {
                 <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
                   Add document
                 </p>
-                <h2 className="mt-2 text-2xl font-semibold text-slate-950">Create a new file</h2>
+                <h2 className="mt-2 text-2xl font-semibold text-slate-950">
+                  Create a new file
+                </h2>
               </div>
+
               <div className="flex flex-col gap-3 sm:flex-row">
                 <button
                   onClick={() => handleTabChange('active')}
@@ -206,6 +308,7 @@ export default function HouseKeepingPage() {
                 >
                   Active
                 </button>
+
                 <button
                   onClick={() => handleTabChange('archived')}
                   className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
@@ -221,7 +324,9 @@ export default function HouseKeepingPage() {
 
             <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
               <label className="block">
-                <span className="text-sm font-medium text-slate-700">Document name</span>
+                <span className="text-sm font-medium text-slate-700">
+                  Document name
+                </span>
                 <input
                   type="text"
                   value={newDocName}
@@ -230,6 +335,7 @@ export default function HouseKeepingPage() {
                   className="mt-2 w-full rounded-3xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-sky-200"
                 />
               </label>
+
               <button
                 onClick={addDocument}
                 className="inline-flex items-center justify-center rounded-3xl bg-slate-950 px-6 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
@@ -238,32 +344,95 @@ export default function HouseKeepingPage() {
               </button>
             </div>
 
-            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-sm font-medium text-slate-700">Auto-archive rule</p>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                Documents created more than five years ago are moved to the archive automatically when the page loads.
-              </p>
-            </div>
+            {activeTab === 'active' && (
+              <div className="flex flex-wrap items-center gap-3">
+                <select
+                  value={selectedYear}
+                  onChange={(e) => setSelectedYear(e.target.value)}
+                  className="rounded-full border border-slate-300 px-4 py-2 text-sm"
+                >
+                  <option value="">Select year</option>
+                  {availableYears.map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
+
+                <button
+                  onClick={applyYearFilter}
+                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                >
+                  Filter
+                </button>
+
+                <button
+                  onClick={resetYearFilter}
+                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                >
+                  Reset
+                </button>
+
+                <button
+                  onClick={archiveSelectedDocuments}
+                  className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Archive Selected
+                </button>
+
+                <button
+                  onClick={() => setShowArchiveYearModal(true)}
+                  className="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Archive All by Year
+                </button>
+              </div>
+            )}
 
             <div className="space-y-4">
               {activeTab === 'active' ? (
                 <div>
-                  <h3 className="text-lg font-semibold text-slate-950">Active documents</h3>
-                  {pageDocuments.length === 0 ? (
-                    <p className="mt-3 text-sm text-slate-600">No active documents yet.</p>
+                  <h3 className="text-lg font-semibold text-slate-950">
+                    Active documents
+                  </h3>
+
+                  {filteredDocuments.length === 0 ? (
+                    <p className="mt-3 text-sm text-slate-600">
+                      No active documents found.
+                    </p>
                   ) : (
                     <div className="space-y-3">
-                      {pageDocuments.map((doc) => (
+                      {filteredDocuments.map((doc) => (
                         <div
                           key={doc.id}
                           className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
                         >
-                          <div>
-                            <p className="font-semibold text-slate-950">{doc.name}</p>
-                            <p className="text-sm text-slate-500">
-                              Created {new Date(doc.createdAt).toLocaleDateString()}
-                            </p>
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="checkbox"
+                              checked={selectedDocs.includes(doc.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedDocs((prev) => [...prev, doc.id]);
+                                } else {
+                                  setSelectedDocs((prev) =>
+                                    prev.filter((id) => id !== doc.id)
+                                  );
+                                }
+                              }}
+                            />
+
+                            <div>
+                              <p className="font-semibold text-slate-950">
+                                {doc.name}
+                              </p>
+                              <p className="text-sm text-slate-500">
+                                Created{' '}
+                                {new Date(doc.createdAt).toLocaleDateString()}
+                              </p>
+                            </div>
                           </div>
+
                           <button
                             onClick={() => archiveDocument(doc.id)}
                             className="inline-flex items-center justify-center rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
@@ -277,9 +446,14 @@ export default function HouseKeepingPage() {
                 </div>
               ) : (
                 <div>
-                  <h3 className="text-lg font-semibold text-slate-950">Archived documents</h3>
+                  <h3 className="text-lg font-semibold text-slate-950">
+                    Archived documents
+                  </h3>
+
                   {pageDocuments.length === 0 ? (
-                    <p className="mt-3 text-sm text-slate-600">No archived documents yet.</p>
+                    <p className="mt-3 text-sm text-slate-600">
+                      No archived documents yet.
+                    </p>
                   ) : (
                     <div className="space-y-3">
                       {pageDocuments.map((doc) => (
@@ -288,11 +462,27 @@ export default function HouseKeepingPage() {
                           className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
                         >
                           <div>
-                            <p className="font-semibold text-slate-950">{doc.name}</p>
-                            <p className="text-sm text-slate-500">
-                              Created {new Date(doc.createdAt).toLocaleDateString()}
+                            <p className="font-semibold text-slate-950">
+                              {doc.name}
                             </p>
+
+                            <div className="space-y-1 text-sm text-slate-500">
+                              <p>
+                                Created{' '}
+                                {new Date(doc.createdAt).toLocaleDateString()}
+                              </p>
+
+                              {doc.archivedAt && (
+                                <p className="font-medium text-amber-600">
+                                  Archived{' '}
+                                  {new Date(
+                                    doc.archivedAt
+                                  ).toLocaleDateString()}
+                                </p>
+                              )}
+                            </div>
                           </div>
+
                           <button
                             onClick={() => restoreDocument(doc.id)}
                             className="inline-flex items-center justify-center rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700"
@@ -311,6 +501,7 @@ export default function HouseKeepingPage() {
               <span>
                 Page {currentPage} of {pageCount || 1}
               </span>
+
               <div className="flex gap-2">
                 <button
                   onClick={() => {
@@ -324,6 +515,7 @@ export default function HouseKeepingPage() {
                 >
                   Previous
                 </button>
+
                 <button
                   onClick={() => {
                     if (!hasNextPage) return;
@@ -342,22 +534,62 @@ export default function HouseKeepingPage() {
 
           <aside className="space-y-6 rounded-3xl bg-white p-6 shadow-lg shadow-slate-200/40">
             <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">Archive section</p>
-              <p className="mt-3 text-sm leading-6 text-slate-600">
-                Documents are grouped automatically based on archive status. Use this area to review archived files and restore them anytime.
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
+                Archive section
               </p>
-            </div>
-            <div className="rounded-3xl border border-slate-200 p-5">
-              <p className="text-sm font-semibold text-slate-700">Archive activity</p>
-              <div className="mt-4 space-y-3 text-sm text-slate-600">
-                <p>• Auto-archiving runs on every page load.</p>
-                <p>• Any document older than 5 years is archived automatically.</p>
-                <p>• Manual archive and restore are available from the list.</p>
-              </div>
+              <p className="mt-3 text-sm leading-6 text-slate-600">
+                Documents are grouped automatically based on archive status.
+              </p>
             </div>
           </aside>
         </div>
       </div>
+
+      {showArchiveYearModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <h3 className="text-xl font-semibold text-slate-950">
+              Archive Documents by Year
+            </h3>
+
+            <p className="mt-2 text-sm text-slate-600">
+              Select a year to archive all active documents created in that year.
+            </p>
+
+            <select
+              value={archiveYear}
+              onChange={(e) => setArchiveYear(e.target.value)}
+              className="mt-4 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm"
+            >
+              <option value="">Select year</option>
+              {availableYears.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  setShowArchiveYearModal(false);
+                  setArchiveYear('');
+                }}
+                className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={archiveAllByYear}
+                className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              >
+                Confirm Archive
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
