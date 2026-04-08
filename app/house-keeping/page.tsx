@@ -12,7 +12,7 @@ interface Document {
 
 interface DocumentRow {
   id: number;
-  tracking_code: string; 
+  tracking_code: string;
   created_at: string;
   archived: number;
   archived_at: string | null;
@@ -41,6 +41,9 @@ export default function HouseKeepingPage() {
   const [selectedYear, setSelectedYear] = useState('');
   const [appliedYearFilter, setAppliedYearFilter] = useState('');
 
+  // REAL-TIME SEARCH
+  const [searchTerm, setSearchTerm] = useState('');
+
   // MULTI SELECT
   const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
 
@@ -49,32 +52,34 @@ export default function HouseKeepingPage() {
   const [archiveYear, setArchiveYear] = useState('');
 
   const fetchDocuments = async (
-    page: number,
-    archived: boolean
-  ): Promise<DocumentsResponse | null> => {
-    try {
-      const response = await fetch(
-        `/api/documents?page=${page}&archived=${archived ? 1 : 0}`
-      );
+  page: number,
+  archived: boolean,
+  search = ''
+): Promise<DocumentsResponse | null> => {
+  try {
+    const response = await fetch(
+      `/api/documents?page=${page}&archived=${archived ? 1 : 0}&search=${encodeURIComponent(search)}`
+    );
 
-      const payload = await response.json();
+    const payload = await response.json();
 
-      if (!response.ok) {
-        throw new Error(payload?.message ?? 'Failed to load documents.');
-      }
-
-      return payload as DocumentsResponse;
-    } catch (error) {
-      console.error('fetchDocuments error:', error);
-      return null;
+    if (!response.ok) {
+      throw new Error(payload?.message ?? 'Failed to load documents.');
     }
-  };
+
+    return payload as DocumentsResponse;
+  } catch (error) {
+    console.error('fetchDocuments error:', error);
+    return null;  
+  }
+};
+
 
   const loadDocuments = async (
     page = 1,
     archived = activeTab === 'archived'
   ) => {
-    const payload = await fetchDocuments(page, archived);
+    const payload = await fetchDocuments(page, archived, searchTerm);
 
     if (!payload) {
       setDocuments([]);
@@ -100,9 +105,9 @@ export default function HouseKeepingPage() {
   };
 
   useEffect(() => {
+    setCurrentPage(1);
     loadDocuments(1, activeTab === 'archived');
-    setSelectedDocs([]);
-  }, [activeTab]);
+  }, [searchTerm, activeTab]);
 
   const addDocument = async () => {
     if (!newDocName.trim()) return;
@@ -190,9 +195,7 @@ export default function HouseKeepingPage() {
     }
 
     await Promise.all(
-      docsToArchive.map((doc) =>
-        patchDocument(doc.id, true, false)
-      )
+      docsToArchive.map((doc) => patchDocument(doc.id, true, false))
     );
 
     setShowArchiveYearModal(false);
@@ -205,6 +208,7 @@ export default function HouseKeepingPage() {
     setActiveTab(tab);
     setCurrentPage(1);
     setSelectedDocs([]);
+    setSearchTerm('');
   };
 
   const pageCount = Math.ceil(
@@ -230,15 +234,17 @@ export default function HouseKeepingPage() {
     if (activeTab !== 'active') return pageDocuments;
 
     return pageDocuments.filter((doc) => {
-      if (!appliedYearFilter) return true;
+      const matchesYear = appliedYearFilter
+        ? new Date(doc.createdAt).getFullYear().toString() === appliedYearFilter
+        : true;
 
-      const docYear = new Date(doc.createdAt)
-        .getFullYear()
-        .toString();
+      const matchesSearch = searchTerm
+        ? doc.name.toLowerCase().includes(searchTerm.toLowerCase())
+        : true;
 
-      return docYear === appliedYearFilter;
+      return matchesYear && matchesSearch;
     });
-  }, [pageDocuments, appliedYearFilter, activeTab]);
+  }, [pageDocuments, appliedYearFilter, searchTerm, activeTab]);
 
   const applyYearFilter = () => {
     setAppliedYearFilter(selectedYear);
@@ -247,6 +253,7 @@ export default function HouseKeepingPage() {
   const resetYearFilter = () => {
     setSelectedYear('');
     setAppliedYearFilter('');
+    setSearchTerm('');
   };
 
   return (
@@ -346,6 +353,14 @@ export default function HouseKeepingPage() {
 
             {activeTab === 'active' && (
               <div className="flex flex-wrap items-center gap-3">
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search tracking code..."
+                  className="w-72 rounded-full border border-slate-300 px-4 py-2 text-sm"
+                />
+
                 <select
                   value={selectedYear}
                   onChange={(e) => setSelectedYear(e.target.value)}

@@ -59,33 +59,69 @@ export async function GET(request: NextRequest) {
     const url = new URL(request.url);
     const page = Number(url.searchParams.get('page') ?? '1') || 1;
     const archivedParam = url.searchParams.get('archived');
+    const search = String(url.searchParams.get('search') ?? '').trim();
+
     const limit = 10;
     const offset = (page - 1) * limit;
 
     connection = await getConnection();
     await ensureDocumentSchema(connection);
 
-    // Removed automatic archiving logic - documents will only be archived manually
+    // Build WHERE conditions
+    const whereConditions: string[] = [];
+    const params: Array<string | number> = [];
 
+    if (archivedParam === '0' || archivedParam === '1') {
+      whereConditions.push('archived = ?');
+      params.push(Number(archivedParam));
+    }
+
+    if (search) {
+      whereConditions.push(
+        `(tracking_code LIKE ? OR DATE_FORMAT(created_at, '%Y-%m-%d') LIKE ?)`
+      );
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    const whereClause =
+      whereConditions.length > 0
+        ? `WHERE ${whereConditions.join(' AND ')}`
+        : '';
+
+    // Count total documents (for dashboard)
     const [countRows] = await connection.execute(
       'SELECT COUNT(*) AS totalDocuments, SUM(archived = 0) AS activeCount, SUM(archived = 1) AS archivedCount FROM dts_documents'
     );
 
-    const counts = Array.isArray(countRows) && countRows.length > 0 ? (countRows[0] as any) : { totalDocuments: 0, activeCount: 0, archivedCount: 0 };
+    const counts =
+      Array.isArray(countRows) && countRows.length > 0
+        ? (countRows[0] as any)
+        : {
+            totalDocuments: 0,
+            activeCount: 0,
+            archivedCount: 0,
+          };
 
-    const params: Array<string | number> = [];
-    let whereClause = '';
-
-    if (archivedParam === '0' || archivedParam === '1') {
-      whereClause = 'WHERE archived = ?';
-      params.push(Number(archivedParam));
-    }
-
-    params.push(limit, offset);
-
-    const [rows] = await connection.execute(
-      `SELECT * FROM dts_documents ${whereClause} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+    // Count total documents matching the current filter/search
+    const [filteredCountRows] = await connection.execute(
+      `SELECT COUNT(*) AS totalFiltered
+       FROM dts_documents
+       ${whereClause}`,
       params
+    );
+
+    const totalFiltered =
+      Array.isArray(filteredCountRows) && filteredCountRows.length > 0
+        ? (filteredCountRows[0] as any).totalFiltered
+        : 0;
+
+    // Fetch paginated documents
+    const [rows] = await connection.execute(
+      `SELECT * FROM dts_documents
+       ${whereClause}
+       ORDER BY created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
     );
 
     return NextResponse.json({
@@ -94,6 +130,8 @@ export async function GET(request: NextRequest) {
       activeCount: Number(counts.activeCount ?? 0),
       archivedCount: Number(counts.archivedCount ?? 0),
       page,
+      totalFiltered, // total number of documents matching search/filters
+      totalPages: Math.ceil(totalFiltered / limit), // total pages for pagination
     });
   } catch (error) {
     console.error('GET /api/documents error:', error);
@@ -124,6 +162,7 @@ export async function POST(request: NextRequest) {
 
     connection = await getConnection();
     await ensureDocumentSchema(connection);
+
     const [result] = await connection.execute(
       'INSERT INTO dts_documents (tracking_code, created_at, archived) VALUES (?, NOW(), 0)',
       [name]
@@ -161,6 +200,7 @@ export async function PATCH(request: NextRequest) {
 
     connection = await getConnection();
     await ensureDocumentSchema(connection);
+
     await connection.execute(
       'UPDATE dts_documents SET archived = ?, archived_at = IF(? = 1, NOW(), NULL) WHERE id = ?',
       [archivedValue, archivedValue, id]
