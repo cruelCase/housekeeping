@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 
 interface Document {
   id: string;
@@ -47,6 +47,9 @@ export default function HouseKeepingPage() {
   // MULTI SELECT
   const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
 
+  // SUCCESS MESSAGE
+  const [successMessage, setSuccessMessage] = useState('');
+
   // MODAL STATES
   const [showArchiveYearModal, setShowArchiveYearModal] = useState(false);
   const [archiveYear, setArchiveYear] = useState('');
@@ -75,7 +78,7 @@ export default function HouseKeepingPage() {
 };
 
 
-  const loadDocuments = async (
+  const loadDocuments = useCallback(async (
     page = 1,
     archived = activeTab === 'archived'
   ) => {
@@ -102,12 +105,12 @@ export default function HouseKeepingPage() {
     setActiveCount(payload.activeCount);
     setArchivedCount(payload.archivedCount);
     setCurrentPage(payload.page);
-  };
+  }, [activeTab, searchTerm]);
 
   useEffect(() => {
     setCurrentPage(1);
     loadDocuments(1, activeTab === 'archived');
-  }, [searchTerm, activeTab]);
+  }, [searchTerm, activeTab, loadDocuments]);
 
   const addDocument = async () => {
     if (!newDocName.trim()) return;
@@ -164,10 +167,14 @@ export default function HouseKeepingPage() {
 
   const archiveDocument = async (id: string) => {
     await patchDocument(id, true);
+    setSuccessMessage('Document Archived');
+    setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
   const restoreDocument = async (id: string) => {
     await patchDocument(id, false);
+    setSuccessMessage('Document Restored');
+    setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
   const archiveSelectedDocuments = async () => {
@@ -179,6 +186,8 @@ export default function HouseKeepingPage() {
 
     setSelectedDocs([]);
     await loadDocuments(currentPage, false);
+    setSuccessMessage(`${selectedDocs.length} Documents Archived`);
+    setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
   const archiveAllByYear = async () => {
@@ -202,6 +211,8 @@ export default function HouseKeepingPage() {
     setArchiveYear('');
     setSelectedDocs([]);
     await loadDocuments(currentPage, false);
+    setSuccessMessage(`${docsToArchive.length} Documents Archived`);
+    setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
   const handleTabChange = (tab: 'active' | 'archived') => {
@@ -258,6 +269,11 @@ export default function HouseKeepingPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
+      {successMessage && (
+        <div className="fixed top-4 right-4 z-50 rounded-lg bg-green-500 px-4 py-2 text-white shadow-lg">
+          {successMessage}
+        </div>
+      )}
       <div className="mx-auto max-w-6xl px-6 py-10">
         <div className="mb-8 rounded-3xl bg-white p-8 shadow-lg shadow-slate-200/50">
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
