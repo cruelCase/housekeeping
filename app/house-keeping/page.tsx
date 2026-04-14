@@ -46,9 +46,13 @@ export default function HouseKeepingPage() {
 
   // MULTI SELECT
   const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
+  const [selectedArchivedDocs, setSelectedArchivedDocs] = useState<string[]>([]);
 
   // SUCCESS MESSAGE
   const [successMessage, setSuccessMessage] = useState('');
+
+  // ARCHIVE OLD ROUTES
+  const [archiveMonths, setArchiveMonths] = useState(12);
 
   // MODAL STATES
   const [showArchiveYearModal, setShowArchiveYearModal] = useState(false);
@@ -177,6 +181,19 @@ export default function HouseKeepingPage() {
     setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
+  const restoreSelectedArchived = async () => {
+    if (selectedArchivedDocs.length === 0) return;
+
+    await Promise.all(
+      selectedArchivedDocs.map((id) => patchDocument(id, false))
+    );
+
+    setSelectedArchivedDocs([]);
+    await loadDocuments(currentPage, true);
+    setSuccessMessage(`${selectedArchivedDocs.length} Documents Restored`);
+    setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
+  };
+
   const archiveSelectedDocuments = async () => {
     if (selectedDocs.length === 0) return;
 
@@ -215,10 +232,36 @@ export default function HouseKeepingPage() {
     setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
+  const archiveOldRoutes = async () => {
+    try {
+      const response = await fetch('/api/documents', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ monthsOld: archiveMonths }),
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.message ?? 'Failed to archive old routes.');
+      }
+
+      setSuccessMessage(`Archived ${payload.archivedCount} old routes`);
+      setTimeout(() => setSuccessMessage(''), 5000);
+    } catch (error) {
+      console.error('archiveOldRoutes error:', error);
+      setSuccessMessage('Failed to archive old routes');
+      setTimeout(() => setSuccessMessage(''), 3000);
+    }
+  };
+
   const handleTabChange = (tab: 'active' | 'archived') => {
     setActiveTab(tab);
     setCurrentPage(1);
     setSelectedDocs([]);
+    setSelectedArchivedDocs([]);
     setSearchTerm('');
   };
 
@@ -304,6 +347,42 @@ export default function HouseKeepingPage() {
                 <p className="text-sm text-slate-500">Archived</p>
                 <p className="mt-2 text-2xl font-semibold">{archivedCount}</p>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mb-8 rounded-3xl bg-white p-8 shadow-lg shadow-slate-200/50">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-orange-600">
+                Database Maintenance
+              </p>
+              <h1 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
+                Archive Old Routes
+              </h1>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+                Automatically archive old document routes to improve performance.
+              </p>
+            </div>
+
+            <div className="flex gap-3 items-center">
+              <div className="flex flex-col">
+                <label className="text-sm text-slate-600">Months old:</label>
+                <input
+                  type="number"
+                  value={archiveMonths}
+                  onChange={(e) => setArchiveMonths(Number(e.target.value))}
+                  className="mt-1 px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                  min="1"
+                  max="120"
+                />
+              </div>
+              <button
+                onClick={archiveOldRoutes}
+                className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 transition-colors"
+              >
+                Archive Routes
+              </button>
             </div>
           </div>
         </div>
@@ -477,9 +556,35 @@ export default function HouseKeepingPage() {
                 </div>
               ) : (
                 <div>
-                  <h3 className="text-lg font-semibold text-slate-950">
-                    Archived documents
-                  </h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-slate-950">
+                      Archived documents
+                    </h3>
+
+                    {pageDocuments.length > 0 && (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setSelectedArchivedDocs(pageDocuments.map(doc => doc.id))}
+                          className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          onClick={() => setSelectedArchivedDocs([])}
+                          className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                        >
+                          Deselect All
+                        </button>
+                        <button
+                          onClick={restoreSelectedArchived}
+                          disabled={selectedArchivedDocs.length === 0}
+                          className="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Restore Selected ({selectedArchivedDocs.length})
+                        </button>
+                      </div>
+                    )}
+                  </div>
 
                   {pageDocuments.length === 0 ? (
                     <p className="mt-3 text-sm text-slate-600">
@@ -492,7 +597,22 @@ export default function HouseKeepingPage() {
                           key={doc.id}
                           className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
                         >
-                          <div>
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="checkbox"
+                              checked={selectedArchivedDocs.includes(doc.id)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedArchivedDocs((prev) => [...prev, doc.id]);
+                                } else {
+                                  setSelectedArchivedDocs((prev) =>
+                                    prev.filter((id) => id !== doc.id)
+                                  );
+                                }
+                              }}
+                            />
+
+                            <div>
                             <p className="font-semibold text-slate-950">
                               {doc.name}
                             </p>
@@ -512,6 +632,7 @@ export default function HouseKeepingPage() {
                                 </p>
                               )}
                             </div>
+                          </div>
                           </div>
 
                           <button
@@ -569,8 +690,14 @@ export default function HouseKeepingPage() {
                 Archive section
               </p>
               <p className="mt-3 text-sm leading-6 text-slate-600">
-                Documents are grouped automatically based on archive status.
+                Documents are grouped automatically based on archive status. Any document routes too old will be archived automatically.
               </p>
+              <button
+                onClick={() => window.location.href = '/house-keeping/routeauto'}
+                className="mt-4 px-4 py-2 bg-slate-600 text-white text-sm rounded-lg hover:bg-slate-700 transition-colors"
+              >
+                Route Archives
+              </button>
             </div>
           </aside>
         </div>

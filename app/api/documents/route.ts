@@ -116,7 +116,12 @@ async function ensureArchivedDocumentSchema(connection: mysql.Connection) {
 }
 
 async function deleteDocumentChildren(connection: mysql.Connection, documentId: number) {
+  let fkDisabled = false;
+
   try {
+    await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
+    fkDisabled = true;
+
     await connection.execute(
       'DELETE FROM dts_doc_routes WHERE dts_document_id = ?',
       [documentId]
@@ -128,6 +133,10 @@ async function deleteDocumentChildren(connection: mysql.Connection, documentId: 
       if (!msg.includes('doesn\'t exist') && !msg.includes('does not exist')) {
         throw error;
       }
+    }
+  } finally {
+    if (fkDisabled) {
+      await connection.execute('SET FOREIGN_KEY_CHECKS = 1');
     }
   }
 }
@@ -290,9 +299,14 @@ export async function PATCH(request: NextRequest) {
   try {
     const body = await request.json();
     const id = Number(body?.id);
-    const archived = Boolean(body?.archived);
+    const rawArchived = body?.archived;
+    const archived =
+      rawArchived === true ||
+      rawArchived === 'true' ||
+      rawArchived === 1 ||
+      rawArchived === '1';
 
-    if (!id || typeof body.archived !== 'boolean') {
+    if (!id || (rawArchived !== true && rawArchived !== false && rawArchived !== 'true' && rawArchived !== 'false' && rawArchived !== 1 && rawArchived !== 0 && rawArchived !== '1' && rawArchived !== '0')) {
       return NextResponse.json(
         { message: 'Invalid request payload.' },
         { status: 400 }
@@ -367,7 +381,12 @@ export async function PATCH(request: NextRequest) {
       await ensureDocumentSchema(connection);
 
       await connection.execute(
-        'INSERT INTO dts_documents (id, tracking_code, created_at, archived, archived_at) VALUES (?, ?, ?, 0, NULL)',
+        `INSERT INTO dts_documents (id, tracking_code, created_at, archived, archived_at)
+         VALUES (?, ?, ?, 0, NULL)
+         ON DUPLICATE KEY UPDATE
+           archived = 0,
+           archived_at = NULL,
+           created_at = VALUES(created_at)`,
         [doc.original_id, doc.tracking_code, doc.created_at]
       );
 
