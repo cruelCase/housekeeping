@@ -38,8 +38,7 @@ export default function HouseKeepingPage() {
   const [archivedCount, setArchivedCount] = useState(0);
 
   // FILTER STATES
-  const [selectedYear, setSelectedYear] = useState('');
-  const [appliedYearFilter, setAppliedYearFilter] = useState('');
+  const [selectedDate, setSelectedDate] = useState('');
 
   // REAL-TIME SEARCH
   const [searchTerm, setSearchTerm] = useState('');
@@ -55,8 +54,9 @@ export default function HouseKeepingPage() {
   const [archiveMonths, setArchiveMonths] = useState(12);
 
   // MODAL STATES
-  const [showArchiveYearModal, setShowArchiveYearModal] = useState(false);
-  const [archiveYear, setArchiveYear] = useState('');
+  const [showArchiveDateModal, setShowArchiveDateModal] = useState(false);
+  const [archiveDate, setArchiveDate] = useState('');
+  const [showArchiveOldRoutesConfirmation, setShowArchiveOldRoutesConfirmation] = useState(false);
 
   const fetchDocuments = async (
   page: number,
@@ -207,16 +207,19 @@ export default function HouseKeepingPage() {
     setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
-  const archiveAllByYear = async () => {
-    if (!archiveYear) return;
+  const archiveAllByDate = async () => {
+    if (!archiveDate) return;
 
     const docsToArchive = documents.filter((doc) => {
-      const year = new Date(doc.createdAt).getFullYear().toString();
-      return year === archiveYear;
+      const docDate = new Date(doc.createdAt);
+      const docDateString = docDate.getFullYear() + '-' +
+        String(docDate.getMonth() + 1).padStart(2, '0') + '-' +
+        String(docDate.getDate()).padStart(2, '0');
+      return docDateString === archiveDate;
     });
 
     if (docsToArchive.length === 0) {
-      setShowArchiveYearModal(false);
+      setShowArchiveDateModal(false);
       return;
     }
 
@@ -224,8 +227,8 @@ export default function HouseKeepingPage() {
       docsToArchive.map((doc) => patchDocument(doc.id, true, false))
     );
 
-    setShowArchiveYearModal(false);
-    setArchiveYear('');
+    setShowArchiveDateModal(false);
+    setArchiveDate('');
     setSelectedDocs([]);
     await loadDocuments(currentPage, false);
     setSuccessMessage(`${docsToArchive.length} Documents Archived`);
@@ -234,7 +237,7 @@ export default function HouseKeepingPage() {
 
   const archiveOldRoutes = async () => {
     try {
-      const response = await fetch('/api/documents', {
+      const response = await fetch('/api/archived-routes', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -274,39 +277,32 @@ export default function HouseKeepingPage() {
 
   const pageDocuments = documents;
 
-  const availableYears = useMemo(() => {
-    const years = new Set(
-      pageDocuments.map((doc) =>
-        new Date(doc.createdAt).getFullYear().toString()
-      )
-    );
 
-    return Array.from(years).sort((a, b) => Number(b) - Number(a));
-  }, [pageDocuments]);
 
   const filteredDocuments = useMemo(() => {
     if (activeTab !== 'active') return pageDocuments;
 
     return pageDocuments.filter((doc) => {
-      const matchesYear = appliedYearFilter
-        ? new Date(doc.createdAt).getFullYear().toString() === appliedYearFilter
+      const matchesDate = selectedDate
+        ? (() => {
+            const docDate = new Date(doc.createdAt);
+            const docDateString = docDate.getFullYear() + '-' +
+              String(docDate.getMonth() + 1).padStart(2, '0') + '-' +
+              String(docDate.getDate()).padStart(2, '0');
+            return docDateString === selectedDate;
+          })()
         : true;
 
       const matchesSearch = searchTerm
         ? doc.name.toLowerCase().includes(searchTerm.toLowerCase())
         : true;
 
-      return matchesYear && matchesSearch;
+      return matchesDate && matchesSearch;
     });
-  }, [pageDocuments, appliedYearFilter, searchTerm, activeTab]);
+  }, [pageDocuments, selectedDate, searchTerm, activeTab]);
 
-  const applyYearFilter = () => {
-    setAppliedYearFilter(selectedYear);
-  };
-
-  const resetYearFilter = () => {
-    setSelectedYear('');
-    setAppliedYearFilter('');
+  const resetDateFilter = () => {
+    setSelectedDate('');
     setSearchTerm('');
   };
 
@@ -378,7 +374,7 @@ export default function HouseKeepingPage() {
                 />
               </div>
               <button
-                onClick={archiveOldRoutes}
+                onClick={() => setShowArchiveOldRoutesConfirmation(true)}
                 className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 transition-colors"
               >
                 Archive Routes
@@ -456,28 +452,15 @@ export default function HouseKeepingPage() {
                   className="w-72 rounded-full border border-slate-300 px-4 py-2 text-sm"
                 />
 
-                <select
-                  value={selectedYear}
-                  onChange={(e) => setSelectedYear(e.target.value)}
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
                   className="rounded-full border border-slate-300 px-4 py-2 text-sm"
-                >
-                  <option value="">Select year</option>
-                  {availableYears.map((year) => (
-                    <option key={year} value={year}>
-                      {year}
-                    </option>
-                  ))}
-                </select>
+                />
 
                 <button
-                  onClick={applyYearFilter}
-                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
-                >
-                  Filter
-                </button>
-
-                <button
-                  onClick={resetYearFilter}
+                  onClick={resetDateFilter}
                   className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
                 >
                   Reset
@@ -491,10 +474,10 @@ export default function HouseKeepingPage() {
                 </button>
 
                 <button
-                  onClick={() => setShowArchiveYearModal(true)}
+                  onClick={() => setShowArchiveDateModal(true)}
                   className="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white"
                 >
-                  Archive All by Year
+                  Archive All by Date
                 </button>
               </div>
             )}
@@ -703,35 +686,29 @@ export default function HouseKeepingPage() {
         </div>
       </div>
 
-      {showArchiveYearModal && (
+      {showArchiveDateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
           <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
             <h3 className="text-xl font-semibold text-slate-950">
-              Archive Documents by Year
+              Archive Documents by Date
             </h3>
 
             <p className="mt-2 text-sm text-slate-600">
-              Select a year to archive all active documents created in that year.
+              Select a date to archive all active documents created on that date.
             </p>
 
-            <select
-              value={archiveYear}
-              onChange={(e) => setArchiveYear(e.target.value)}
+            <input
+              type="date"
+              value={archiveDate}
+              onChange={(e) => setArchiveDate(e.target.value)}
               className="mt-4 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm"
-            >
-              <option value="">Select year</option>
-              {availableYears.map((year) => (
-                <option key={year} value={year}>
-                  {year}
-                </option>
-              ))}
-            </select>
+            />
 
             <div className="mt-6 flex justify-end gap-3">
               <button
                 onClick={() => {
-                  setShowArchiveYearModal(false);
-                  setArchiveYear('');
+                  setShowArchiveDateModal(false);
+                  setArchiveDate('');
                 }}
                 className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
               >
@@ -739,8 +716,41 @@ export default function HouseKeepingPage() {
               </button>
 
               <button
-                onClick={archiveAllByYear}
+                onClick={archiveAllByDate}
                 className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              >
+                Confirm Archive
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showArchiveOldRoutesConfirmation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
+            <h3 className="text-xl font-semibold text-slate-950">
+              Archive Old Routes
+            </h3>
+
+            <p className="mt-2 text-sm text-slate-600">
+              Are you sure you want to archive routes {archiveMonths} {archiveMonths === 1 ? 'month' : 'months'} old?
+            </p>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                onClick={() => setShowArchiveOldRoutesConfirmation(false)}
+                className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowArchiveOldRoutesConfirmation(false);
+                  archiveOldRoutes();
+                }}
+                className="rounded-full bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-700"
               >
                 Confirm Archive
               </button>
