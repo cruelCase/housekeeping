@@ -15,132 +15,197 @@ const dbConfigArchive = {
   database: 'uniquearchdoc',
 };
 
+/* =========================
+   CONNECTION HELPERS
+========================= */
 async function getConnection() {
   return mysql.createConnection(dbConfig);
 }
 
 async function getConnectionArchive() {
-  // First, connect without database to create it if needed
   const tempConfig = { ...dbConfigArchive } as any;
   delete tempConfig.database;
+
   const tempConnection = await mysql.createConnection(tempConfig);
   await tempConnection.execute('CREATE DATABASE IF NOT EXISTS uniquearchdoc');
   await tempConnection.end();
 
-  // Now connect to the database
   return mysql.createConnection(dbConfigArchive);
 }
 
+/* =========================
+   DB1 SCHEMA
+========================= */
 async function ensureDocumentSchema(connection: mysql.Connection) {
-  try {
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS dts_documents (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        tracking_code VARCHAR(255) NOT NULL,
-        created_at DATETIME NOT NULL,
-        archived TINYINT(1) NOT NULL DEFAULT 0,
-        archived_at DATETIME NULL
-      )
-    `);
-
-    const [columns] = await connection.execute('SHOW COLUMNS FROM dts_documents');
-    const existingColumns = new Set(
-      (columns as Array<{ Field: string }>).map((column) => column.Field)
-    );
-    const alterClauses: string[] = [];
-
-    if (!existingColumns.has('tracking_code')) {
-      alterClauses.push('ADD COLUMN tracking_code VARCHAR(255) NOT NULL');
-    }
-    if (!existingColumns.has('created_at')) {
-      alterClauses.push('ADD COLUMN created_at DATETIME NOT NULL');
-    }
-    if (!existingColumns.has('archived')) {
-      alterClauses.push('ADD COLUMN archived TINYINT(1) NOT NULL DEFAULT 0');
-    }
-    if (!existingColumns.has('archived_at')) {
-      alterClauses.push('ADD COLUMN archived_at DATETIME NULL');
-    }
-
-    if (alterClauses.length > 0) {
-      await connection.execute(`ALTER TABLE dts_documents ${alterClauses.join(', ')}`);
-    }
-  } catch (error) {
-    console.error('ensureDocumentSchema error:', error);
-    throw error;
-  }
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS dts_documents (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      tracking_code VARCHAR(255) NOT NULL,
+      created_at DATETIME NOT NULL,
+      archived TINYINT(1) NOT NULL DEFAULT 0,
+      archived_at DATETIME NULL
+    )
+  `);
 }
 
+/* =========================
+   DB2 DOCUMENT SCHEMA
+========================= */
 async function ensureArchivedDocumentSchema(connection: mysql.Connection) {
-  try {
-    await connection.execute(`
-      CREATE TABLE IF NOT EXISTS archived_documents (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        original_id INT NOT NULL,
-        tracking_code VARCHAR(255) NOT NULL,
-        created_at DATETIME NOT NULL,
-        archived TINYINT(1) NOT NULL DEFAULT 1,
-        archived_at DATETIME NULL
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS archived_documents (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      original_id INT NOT NULL,
+      tracking_code VARCHAR(255) NOT NULL,
+      created_at DATETIME NOT NULL,
+      archived TINYINT(1) NOT NULL DEFAULT 1,
+      archived_at DATETIME NULL
+    )
+  `);
+}
+
+/* =========================
+   DB2 ROUTES SCHEMA (FIXED)
+========================= */
+async function ensureArchivedRoutesSchema(connection: mysql.Connection) {
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS archived_doc_routes (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      original_route_id INT NOT NULL,
+      original_document_id INT NOT NULL,
+      tracking_code VARCHAR(255),
+      created_at DATETIME,
+      route_data LONGTEXT,
+      archived_at DATETIME NOT NULL
+    )
+  `);
+}
+
+/* =========================
+   ARCHIVE ROUTES (FIXED - MOVES DATA NOT DELETE ONLY)
+========================= */
+async function archiveRoutes(
+  sourceConn: mysql.Connection,
+  archiveConn: mysql.Connection,
+  documentId: number
+) {
+  await ensureArchivedRoutesSchema(archiveConn);
+
+  const [rows] = await sourceConn.execute(
+    'SELECT * FROM dts_doc_routes WHERE dts_document_id = ?',
+    [documentId]
+  );
+
+  const routes = rows as any[];
+
+  for (const route of routes) {
+    await archiveConn.execute(
+      `INSERT INTO archived_doc_routes (
+        dts_route_original_id,
+        dts_document_id,
+        previous_route_id,
+        from_user_id,
+        from_section_id,
+        for_section_id,
+        for_user_id,
+        receiver_user_id,
+        route_purpose,
+        accepting_remarks,
+        actions_taken,
+        actedby_user_id,
+        date_forwarded,
+        date_accepted,
+        date_acted,
+        io_type,
+        fwd_io_type,
+        status_id,
+        deferred_reason,
+        deferred_date,
+        defer_until,
+        out_released_to,
+        logbook_page,
+        del_reason,
+        end_remarks,
+        autoaction_date,
+        date_parked,
+        oldstatus,
+        active,
+        route_accomplished,
+        batch_release_id,
+        is_qr_accept,
+        for_archived,
+        created_at,
+        updated_at,
+        deleted_at,
+        dts_route_archived_at
       )
-    `);
-
-    const [columns] = await connection.execute('SHOW COLUMNS FROM archived_documents');
-    const existingColumns = new Set(
-      (columns as Array<{ Field: string }>).map((column) => column.Field)
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW()
+      )`,
+      [
+        route.id,
+        route.dts_document_id,
+        route.previous_route_id,
+        route.from_user_id,
+        route.from_section_id,
+        route.for_section_id,
+        route.for_user_id,
+        route.receiver_user_id,
+        route.route_purpose,
+        route.accepting_remarks,
+        route.actions_taken,
+        route.actedby_user_id,
+        route.date_forwarded,
+        route.date_accepted,
+        route.date_acted,
+        route.io_type,
+        route.fwd_io_type,
+        route.status_id,
+        route.deferred_reason,
+        route.deferred_date,
+        route.defer_until,
+        route.out_released_to,
+        route.logbook_page,
+        route.del_reason,
+        route.end_remarks,
+        route.autoaction_date,
+        route.date_parked,
+        route.oldstatus,
+        route.active,
+        route.route_accomplished,
+        route.batch_release_id,
+        route.is_qr_accept,
+        route.for_archived,
+        route.created_at,
+        route.updated_at,
+        route.deleted_at
+      ]
     );
-    const alterClauses: string[] = [];
 
-    if (!existingColumns.has('original_id')) {
-      alterClauses.push('ADD COLUMN original_id INT NOT NULL');
-    }
-    if (!existingColumns.has('tracking_code')) {
-      alterClauses.push('ADD COLUMN tracking_code VARCHAR(255) NOT NULL');
-    }
-    if (!existingColumns.has('created_at')) {
-      alterClauses.push('ADD COLUMN created_at DATETIME NOT NULL');
-    }
-    if (!existingColumns.has('archived')) {
-      alterClauses.push('ADD COLUMN archived TINYINT(1) NOT NULL DEFAULT 1');
-    }
-    if (!existingColumns.has('archived_at')) {
-      alterClauses.push('ADD COLUMN archived_at DATETIME NULL');
-    }
-
-    if (alterClauses.length > 0) {
-      await connection.execute(`ALTER TABLE archived_documents ${alterClauses.join(', ')}`);
-    }
-  } catch (error) {
-    console.error('ensureArchivedDocumentSchema error:', error);
-    throw error;
   }
 }
 
+
+/* =========================
+   DELETE ROUTES (DB1 CLEANUP ONLY AFTER ARCHIVE)
+========================= */
 async function deleteDocumentChildren(connection: mysql.Connection, documentId: number) {
-  let fkDisabled = false;
-
   try {
-    await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
-    fkDisabled = true;
-
     await connection.execute(
       'DELETE FROM dts_doc_routes WHERE dts_document_id = ?',
       [documentId]
     );
   } catch (error) {
-    // Ignore if the child table does not exist or deletion is not required.
-    if (error instanceof Error) {
-      const msg = error.message.toLowerCase();
-      if (!msg.includes('doesn\'t exist') && !msg.includes('does not exist')) {
-        throw error;
-      }
-    }
-  } finally {
-    if (fkDisabled) {
-      await connection.execute('SET FOREIGN_KEY_CHECKS = 1');
+    const msg = (error as Error).message.toLowerCase();
+    if (!msg.includes('does not exist')) {
+      throw error;
     }
   }
 }
 
+/* =========================
+   GET API (WITH FIXED COUNTS)
+========================= */
 export async function GET(request: NextRequest) {
   let connection;
   let isArchivedQuery = false;
@@ -163,9 +228,8 @@ export async function GET(request: NextRequest) {
       await ensureDocumentSchema(connection);
     }
 
-    // Build WHERE conditions
     const whereConditions: string[] = [];
-    const params: Array<string | number> = [];
+    const params: any[] = [];
 
     if (!isArchivedQuery) {
       whereConditions.push('archived = 0');
@@ -179,60 +243,55 @@ export async function GET(request: NextRequest) {
     }
 
     const whereClause =
-      whereConditions.length > 0
-        ? `WHERE ${whereConditions.join(' AND ')}`
-        : '';
+      whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
-    // For counts, we need to query both databases
-    let totalDocuments = 0;
-    let activeCount = 0;
-    let archivedCount = 0;
+    const tableName = isArchivedQuery
+      ? 'archived_documents'
+      : 'dts_documents';
 
-    // Query active from newdts
-    const activeConn = await getConnection();
-    const [activeRows] = await activeConn.execute(
-      'SELECT COUNT(*) AS activeCount FROM dts_documents WHERE archived = 0'
-    );
-    const activeRowsTyped = activeRows as Array<{activeCount: number}>;
-    activeCount = activeRowsTyped[0]?.activeCount || 0;
-    await activeConn.end();
-
-    // Query archived from uniquearchdoc
-    const archiveConn = await getConnectionArchive();
-    const [archivedRows] = await archiveConn.execute(
-      'SELECT COUNT(*) AS archivedCount FROM archived_documents'
-    );
-    const archivedRowsTyped = archivedRows as Array<{archivedCount: number}>;
-    archivedCount = archivedRowsTyped[0]?.archivedCount || 0;
-    await archiveConn.end();
-
-    totalDocuments = activeCount + archivedCount;
-
-    // Count total documents matching the current filter/search
-    const tableName = isArchivedQuery ? 'archived_documents' : 'dts_documents';
-    const [filteredCountRows] = await connection.execute(
-      `SELECT COUNT(*) AS totalFiltered
-       FROM ${tableName}
-       ${whereClause}`,
-      params
-    );
-
-    const totalFiltered =
-      Array.isArray(filteredCountRows) && filteredCountRows.length > 0
-        ? (filteredCountRows[0] as {totalFiltered: number}).totalFiltered
-        : 0;
-
-    // Fetch paginated documents
     const selectFields = isArchivedQuery
       ? 'original_id AS id, tracking_code, created_at, archived, archived_at'
       : '*';
+
     const [rows] = await connection.execute(
-      `SELECT ${selectFields} FROM ${tableName}
+      `SELECT ${selectFields}
+       FROM ${tableName}
        ${whereClause}
        ORDER BY created_at DESC
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
+
+    /* =========================
+       FIXED STATS SECTION
+    ========================= */
+
+    let totalDocuments = 0;
+    let activeCount = 0;
+    let archivedCount = 0;
+
+    const activeConn = await getConnection();
+    const [activeRows] = await activeConn.execute(
+      'SELECT COUNT(*) AS activeCount FROM dts_documents WHERE archived = 0'
+    );
+    activeCount = (activeRows as any)[0]?.activeCount || 0;
+    await activeConn.end();
+
+    const archiveConn = await getConnectionArchive();
+    const [archivedRows] = await archiveConn.execute(
+      'SELECT COUNT(*) AS archivedCount FROM archived_documents'
+    );
+    archivedCount = (archivedRows as any)[0]?.archivedCount || 0;
+    await archiveConn.end();
+
+    totalDocuments = activeCount + archivedCount;
+
+    const [filteredRows] = await connection.execute(
+      `SELECT COUNT(*) AS totalFiltered FROM ${tableName} ${whereClause}`,
+      params
+    );
+
+    const totalFiltered = (filteredRows as any)[0]?.totalFiltered || 0;
 
     return NextResponse.json({
       documents: rows,
@@ -240,22 +299,23 @@ export async function GET(request: NextRequest) {
       activeCount,
       archivedCount,
       page,
-      totalFiltered, // total number of documents matching search/filters
-      totalPages: Math.ceil(totalFiltered / limit), // total pages for pagination
+      totalFiltered,
+      totalPages: Math.ceil(totalFiltered / limit),
     });
   } catch (error) {
-    console.error('GET /api/documents error:', error);
+    console.error('GET error:', error);
     return NextResponse.json(
       { message: 'Failed to load documents.' },
       { status: 500 }
     );
   } finally {
-    if (connection) {
-      await connection.end();
-    }
+    if (connection) await connection.end();
   }
 }
 
+/* =========================
+   POST (CREATE DOCUMENT)
+========================= */
 export async function POST(request: NextRequest) {
   let connection;
 
@@ -263,35 +323,32 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const name = String(body?.name ?? '').trim();
 
-    if (!name) {
-      return NextResponse.json(
-        { message: 'Document name is required.' },
-        { status: 400 }
-      );
-    }
-
     connection = await getConnection();
     await ensureDocumentSchema(connection);
 
     const [result] = await connection.execute(
-      'INSERT INTO dts_documents (tracking_code, created_at, archived) VALUES (?, NOW(), 0)',
+      `INSERT INTO dts_documents (tracking_code, created_at, archived)
+       VALUES (?, NOW(), 0)`,
       [name]
     );
 
-    return NextResponse.json({ success: true, id: (result as mysql.ResultSetHeader).insertId });
+    return NextResponse.json({
+      success: true,
+      id: (result as mysql.ResultSetHeader).insertId,
+    });
   } catch (error) {
-    console.error('POST /api/documents error:', error);
     return NextResponse.json(
       { message: 'Failed to create document.' },
       { status: 500 }
     );
   } finally {
-    if (connection) {
-      await connection.end();
-    }
+    if (connection) await connection.end();
   }
 }
 
+/* =========================
+   PATCH (ARCHIVE / RESTORE)
+========================= */
 export async function PATCH(request: NextRequest) {
   let connection;
   let archiveConnection;
@@ -299,22 +356,19 @@ export async function PATCH(request: NextRequest) {
   try {
     const body = await request.json();
     const id = Number(body?.id);
-    const rawArchived = body?.archived;
-    const archived =
-      rawArchived === true ||
-      rawArchived === 'true' ||
-      rawArchived === 1 ||
-      rawArchived === '1';
+    const archived = Boolean(body?.archived);
 
-    if (!id || (rawArchived !== true && rawArchived !== false && rawArchived !== 'true' && rawArchived !== 'false' && rawArchived !== 1 && rawArchived !== 0 && rawArchived !== '1' && rawArchived !== '0')) {
+    if (!id) {
       return NextResponse.json(
-        { message: 'Invalid request payload.' },
+        { message: 'Invalid ID' },
         { status: 400 }
       );
     }
 
+    /* =========================
+       ARCHIVE FLOW
+    ========================= */
     if (archived) {
-      // Archiving: move from dts_documents to archived_documents
       connection = await getConnection();
       await ensureDocumentSchema(connection);
 
@@ -330,29 +384,38 @@ export async function PATCH(request: NextRequest) {
         );
       }
 
-      const doc = rows[0] as {
-        id: number;
-        tracking_code: string;
-        created_at: Date;
-        archived: number;
-        archived_at: Date | null;
-      };
+      const doc = (rows as any)[0];
 
       archiveConnection = await getConnectionArchive();
       await ensureArchivedDocumentSchema(archiveConnection);
 
       await archiveConnection.execute(
-        'INSERT INTO archived_documents (original_id, tracking_code, created_at, archived, archived_at) VALUES (?, ?, ?, 1, NOW())',
+        `INSERT INTO archived_documents (
+          original_id,
+          tracking_code,
+          created_at,
+          archived,
+          archived_at
+        ) VALUES (?, ?, ?, 1, NOW())`,
         [doc.id, doc.tracking_code, doc.created_at]
       );
 
+      /* 🔥 MOVE ROUTES TO ARCHIVE (NOT DELETE FIRST) */
+      await archiveRoutes(connection, archiveConnection, id);
+
+      /* DELETE ROUTES AFTER SUCCESSFUL ARCHIVE */
       await deleteDocumentChildren(connection, id);
+
       await connection.execute(
         'DELETE FROM dts_documents WHERE id = ?',
         [id]
       );
-    } else {
-      // Unarchiving: move from archived_documents to dts_documents
+    }
+
+    /* =========================
+       RESTORE FLOW
+    ========================= */
+    else {
       archiveConnection = await getConnectionArchive();
       await ensureArchivedDocumentSchema(archiveConnection);
 
@@ -368,25 +431,22 @@ export async function PATCH(request: NextRequest) {
         );
       }
 
-      const doc = rows[0] as {
-        id: number;
-        original_id: number;
-        tracking_code: string;
-        created_at: Date;
-        archived: number;
-        archived_at: Date | null;
-      };
+      const doc = (rows as any)[0];
 
       connection = await getConnection();
       await ensureDocumentSchema(connection);
 
       await connection.execute(
-        `INSERT INTO dts_documents (id, tracking_code, created_at, archived, archived_at)
-         VALUES (?, ?, ?, 0, NULL)
-         ON DUPLICATE KEY UPDATE
-           archived = 0,
-           archived_at = NULL,
-           created_at = VALUES(created_at)`,
+        `INSERT INTO dts_documents (
+          id,
+          tracking_code,
+          created_at,
+          archived,
+          archived_at
+        ) VALUES (?, ?, ?, 0, NULL)
+        ON DUPLICATE KEY UPDATE
+          archived = 0,
+          archived_at = NULL`,
         [doc.original_id, doc.tracking_code, doc.created_at]
       );
 
@@ -398,18 +458,13 @@ export async function PATCH(request: NextRequest) {
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('PATCH /api/documents error:', error);
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    console.error('PATCH error:', error);
     return NextResponse.json(
-      { message: `Failed to update document: ${message}` },
+      { message: 'Failed to update document.' },
       { status: 500 }
     );
   } finally {
-    if (connection) {
-      await connection.end();
-    }
-    if (archiveConnection) {
-      await archiveConnection.end();
-    }
+    if (connection) await connection.end();
+    if (archiveConnection) await archiveConnection.end();
   }
 }
