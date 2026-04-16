@@ -39,6 +39,7 @@ export default function HouseKeepingPage() {
 
   // FILTER STATES
   const [selectedDate, setSelectedDate] = useState('');
+  const [appliedDateFilter, setAppliedDateFilter] = useState('');
 
   // REAL-TIME SEARCH
   const [searchTerm, setSearchTerm] = useState('');
@@ -50,13 +51,9 @@ export default function HouseKeepingPage() {
   // SUCCESS MESSAGE
   const [successMessage, setSuccessMessage] = useState('');
 
-  // ARCHIVE OLD ROUTES
-  const [archiveMonths, setArchiveMonths] = useState(12);
-
   // MODAL STATES
   const [showArchiveDateModal, setShowArchiveDateModal] = useState(false);
   const [archiveDate, setArchiveDate] = useState('');
-  const [showArchiveOldRoutesConfirmation, setShowArchiveOldRoutesConfirmation] = useState(false);
 
   const fetchDocuments = async (
   page: number,
@@ -211,11 +208,8 @@ export default function HouseKeepingPage() {
     if (!archiveDate) return;
 
     const docsToArchive = documents.filter((doc) => {
-      const docDate = new Date(doc.createdAt);
-      const docDateString = docDate.getFullYear() + '-' +
-        String(docDate.getMonth() + 1).padStart(2, '0') + '-' +
-        String(docDate.getDate()).padStart(2, '0');
-      return docDateString === archiveDate;
+      const date = new Date(doc.createdAt).toISOString().split('T')[0];
+      return date === archiveDate;
     });
 
     if (docsToArchive.length === 0) {
@@ -233,31 +227,6 @@ export default function HouseKeepingPage() {
     await loadDocuments(currentPage, false);
     setSuccessMessage(`${docsToArchive.length} Documents Archived`);
     setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
-  };
-
-  const archiveOldRoutes = async () => {
-    try {
-      const response = await fetch('/api/archived-routes', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ monthsOld: archiveMonths }),
-      });
-
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload?.message ?? 'Failed to archive old routes.');
-      }
-
-      setSuccessMessage(`Archived ${payload.archivedCount} old routes`);
-      setTimeout(() => setSuccessMessage(''), 5000);
-    } catch (error) {
-      console.error('archiveOldRoutes error:', error);
-      setSuccessMessage('Failed to archive old routes');
-      setTimeout(() => setSuccessMessage(''), 3000);
-    }
   };
 
   const handleTabChange = (tab: 'active' | 'archived') => {
@@ -283,14 +252,8 @@ export default function HouseKeepingPage() {
     if (activeTab !== 'active') return pageDocuments;
 
     return pageDocuments.filter((doc) => {
-      const matchesDate = selectedDate
-        ? (() => {
-            const docDate = new Date(doc.createdAt);
-            const docDateString = docDate.getFullYear() + '-' +
-              String(docDate.getMonth() + 1).padStart(2, '0') + '-' +
-              String(docDate.getDate()).padStart(2, '0');
-            return docDateString === selectedDate;
-          })()
+      const matchesDate = appliedDateFilter
+        ? new Date(doc.createdAt).toISOString().split('T')[0] === appliedDateFilter
         : true;
 
       const matchesSearch = searchTerm
@@ -299,10 +262,15 @@ export default function HouseKeepingPage() {
 
       return matchesDate && matchesSearch;
     });
-  }, [pageDocuments, selectedDate, searchTerm, activeTab]);
+  }, [pageDocuments, appliedDateFilter, searchTerm, activeTab]);
+
+  const applyDateFilter = () => {
+    setAppliedDateFilter(selectedDate);
+  };
 
   const resetDateFilter = () => {
     setSelectedDate('');
+    setAppliedDateFilter('');
     setSearchTerm('');
   };
 
@@ -343,42 +311,6 @@ export default function HouseKeepingPage() {
                 <p className="text-sm text-slate-500">Archived</p>
                 <p className="mt-2 text-2xl font-semibold">{archivedCount}</p>
               </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="mb-8 rounded-3xl bg-white p-8 shadow-lg shadow-slate-200/50">
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-orange-600">
-                Database Maintenance
-              </p>
-              <h1 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
-                Archive Old Routes
-              </h1>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-                Automatically archive old document routes to improve performance.
-              </p>
-            </div>
-
-            <div className="flex gap-3 items-center">
-              <div className="flex flex-col">
-                <label className="text-sm text-slate-600">Months old:</label>
-                <input
-                  type="number"
-                  value={archiveMonths}
-                  onChange={(e) => setArchiveMonths(Number(e.target.value))}
-                  className="mt-1 px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-                  min="1"
-                  max="120"
-                />
-              </div>
-              <button
-                onClick={() => setShowArchiveOldRoutesConfirmation(true)}
-                className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 transition-colors"
-              >
-                Archive Routes
-              </button>
             </div>
           </div>
         </div>
@@ -458,6 +390,13 @@ export default function HouseKeepingPage() {
                   onChange={(e) => setSelectedDate(e.target.value)}
                   className="rounded-full border border-slate-300 px-4 py-2 text-sm"
                 />
+
+                <button
+                  onClick={applyDateFilter}
+                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                >
+                  Filter
+                </button>
 
                 <button
                   onClick={resetDateFilter}
@@ -675,12 +614,6 @@ export default function HouseKeepingPage() {
               <p className="mt-3 text-sm leading-6 text-slate-600">
                 Documents are grouped automatically based on archive status. Any document routes too old will be archived automatically.
               </p>
-              <button
-                onClick={() => window.location.href = '/house-keeping/routeauto'}
-                className="mt-4 px-4 py-2 bg-slate-600 text-white text-sm rounded-lg hover:bg-slate-700 transition-colors"
-              >
-                Route Archives
-              </button>
             </div>
           </aside>
         </div>
@@ -718,39 +651,6 @@ export default function HouseKeepingPage() {
               <button
                 onClick={archiveAllByDate}
                 className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
-              >
-                Confirm Archive
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showArchiveOldRoutesConfirmation && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
-            <h3 className="text-xl font-semibold text-slate-950">
-              Archive Old Routes
-            </h3>
-
-            <p className="mt-2 text-sm text-slate-600">
-              Are you sure you want to archive routes {archiveMonths} {archiveMonths === 1 ? 'month' : 'months'} old?
-            </p>
-
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                onClick={() => setShowArchiveOldRoutesConfirmation(false)}
-                className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
-              >
-                Cancel
-              </button>
-
-              <button
-                onClick={() => {
-                  setShowArchiveOldRoutesConfirmation(false);
-                  archiveOldRoutes();
-                }}
-                className="rounded-full bg-orange-600 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-700"
               >
                 Confirm Archive
               </button>
