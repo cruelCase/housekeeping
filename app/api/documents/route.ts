@@ -485,6 +485,118 @@ export async function POST(request: NextRequest) {
 }
 
 /* =========================
+   Safe delete handler
+========================= */
+
+async function safeDeleteDocument(documentId: number) {
+  let connection;
+  let archiveConnection;
+
+  try {
+    connection = await getConnection();
+    archiveConnection = await getConnectionArchive();
+
+    await ensureDocumentSchema(connection);
+    await ensureArchivedDocumentSchema(archiveConnection);
+    await ensureArchivedRoutesSchema(archiveConnection);
+
+    // 1. Get document first
+    const [docRows] = await connection.execute(
+      'SELECT * FROM dts_documents WHERE id = ?',
+      [documentId]
+    );
+
+    if (!Array.isArray(docRows) || docRows.length === 0) {
+      throw new Error('Document not found');
+    }
+
+    const doc = (docRows as any)[0];
+
+    // 2. Archive document (if not already archived)
+    await archiveConnection.execute(
+        `INSERT INTO archived_documents (
+          original_id,
+          tracking_code,
+          mo_yr,
+          issued_num,
+          description,
+          guestdoc_id,
+          dts_doc_type_id,
+          tracking_issuedby_id,
+          fromuser_id,
+          from_section_id,
+          guest_origin_name,
+          guest_origin_organization,
+          logbook_page,
+          datetime_first_accepted,
+          actions_needed,
+          file_at,
+          status_id,
+          old_track,
+          is_active,
+          for_archived,
+          is_archived,
+          created_at,
+          updated_at,
+          deleted_at,
+          archived,
+          archived_at
+        )
+        VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW()
+        )`,
+        [
+          doc.id,
+          doc.tracking_code,
+          doc.mo_yr,
+          doc.issued_num,
+          doc.description,
+          doc.guestdoc_id,
+          doc.dts_doc_type_id,
+          doc.tracking_issuedby_id,
+          doc.fromuser_id,
+          doc.from_section_id,
+          doc.guest_origin_name,
+          doc.guest_origin_organization,
+          doc.logbook_page,
+          doc.datetime_first_accepted,
+          doc.actions_needed,
+          doc.file_at,
+          doc.status_id,
+          doc.old_track,
+          doc.is_active,
+          doc.for_archived,
+          doc.is_archived,
+          doc.created_at,
+          doc.updated_at,
+          doc.deleted_at
+        ]
+      );
+
+
+    // 3. Archive routes FIRST
+    await archiveRoutes(connection, archiveConnection, documentId);
+
+    // 4. Delete routes from DB1
+    await deleteDocumentChildren(connection, documentId);
+
+    // 5. NOW safe to delete document
+    await connection.execute(
+      'DELETE FROM dts_documents WHERE id = ?',
+      [documentId]
+    );
+
+  } catch (error) {
+    console.error('safeDeleteDocument error:', error);
+    throw error;
+  } finally {
+    if (connection) await connection.end();
+    if (archiveConnection) await archiveConnection.end();
+  }
+}
+
+
+/* =========================
    PATCH (ARCHIVE / RESTORE)
 ========================= */
 export async function PATCH(request: NextRequest) {
@@ -514,15 +626,65 @@ export async function PATCH(request: NextRequest) {
       archiveConnection = await getConnectionArchive();
 
       await archiveConnection.execute(
-        `INSERT INTO archived_documents (
-          original_id,
-          tracking_code,
-          created_at,
-          archived,
-          archived_at
-        ) VALUES (?, ?, ?, 1, NOW())`,
-        [doc.id, doc.tracking_code, doc.created_at]
-      );
+          `INSERT INTO archived_documents (
+            original_id,
+            tracking_code,
+            mo_yr,
+            issued_num,
+            description,
+            guestdoc_id,
+            dts_doc_type_id,
+            tracking_issuedby_id,
+            fromuser_id,
+            from_section_id,
+            guest_origin_name,
+            guest_origin_organization,
+            logbook_page,
+            datetime_first_accepted,
+            actions_needed,
+            file_at,
+            status_id,
+            old_track,
+            is_active,
+            for_archived,
+            is_archived,
+            created_at,
+            updated_at,
+            deleted_at,
+            archived,
+            archived_at
+          )
+          VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW()
+          )`,
+          [
+            doc.id,
+            doc.tracking_code,
+            doc.mo_yr,
+            doc.issued_num,
+            doc.description,
+            doc.guestdoc_id,
+            doc.dts_doc_type_id,
+            doc.tracking_issuedby_id,
+            doc.fromuser_id,
+            doc.from_section_id,
+            doc.guest_origin_name,
+            doc.guest_origin_organization,
+            doc.logbook_page,
+            doc.datetime_first_accepted,
+            doc.actions_needed,
+            doc.file_at,
+            doc.status_id,
+            doc.old_track,
+            doc.is_active,
+            doc.for_archived,
+            doc.is_archived,
+            doc.created_at,
+            doc.updated_at,
+            doc.deleted_at
+          ]
+        );
+
 
       await archiveRoutes(connection, archiveConnection, id);
       await deleteDocumentChildren(connection, id);
@@ -547,16 +709,91 @@ export async function PATCH(request: NextRequest) {
       connection = await getConnection();
 
       await connection.execute(
-        `INSERT INTO dts_documents (
-          id,
-          tracking_code,
-          created_at,
-          archived,
-          archived_at
-        ) VALUES (?, ?, ?, 0, NULL)
-        ON DUPLICATE KEY UPDATE archived = 0`,
-        [doc.original_id, doc.tracking_code, doc.created_at]
-      );
+          `INSERT INTO dts_documents (
+            id,
+            tracking_code,
+            mo_yr,
+            issued_num,
+            description,
+            guestdoc_id,
+            dts_doc_type_id,
+            tracking_issuedby_id,
+            fromuser_id,
+            from_section_id,
+            guest_origin_name,
+            guest_origin_organization,
+            logbook_page,
+            datetime_first_accepted,
+            actions_needed,
+            file_at,
+            status_id,
+            old_track,
+            is_active,
+            for_archived,
+            is_archived,
+            created_at,
+            updated_at,
+            deleted_at,
+            archived,
+            archived_at
+          )
+          VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL
+          )
+          ON DUPLICATE KEY UPDATE
+            tracking_code = VALUES(tracking_code),
+            mo_yr = VALUES(mo_yr),
+            issued_num = VALUES(issued_num),
+            description = VALUES(description),
+            guestdoc_id = VALUES(guestdoc_id),
+            dts_doc_type_id = VALUES(dts_doc_type_id),
+            tracking_issuedby_id = VALUES(tracking_issuedby_id),
+            fromuser_id = VALUES(fromuser_id),
+            from_section_id = VALUES(from_section_id),
+            guest_origin_name = VALUES(guest_origin_name),
+            guest_origin_organization = VALUES(guest_origin_organization),
+            logbook_page = VALUES(logbook_page),
+            datetime_first_accepted = VALUES(datetime_first_accepted),
+            actions_needed = VALUES(actions_needed),
+            file_at = VALUES(file_at),
+            status_id = VALUES(status_id),
+            old_track = VALUES(old_track),
+            is_active = VALUES(is_active),
+            for_archived = VALUES(for_archived),
+            is_archived = VALUES(is_archived),
+            updated_at = VALUES(updated_at),
+            deleted_at = VALUES(deleted_at),
+            archived = 0,
+            archived_at = NULL
+          `,
+          [
+            doc.original_id,
+            doc.tracking_code,
+            doc.mo_yr,
+            doc.issued_num,
+            doc.description,
+            doc.guestdoc_id,
+            doc.dts_doc_type_id,
+            doc.tracking_issuedby_id,
+            doc.fromuser_id,
+            doc.from_section_id,
+            doc.guest_origin_name,
+            doc.guest_origin_organization,
+            doc.logbook_page,
+            doc.datetime_first_accepted,
+            doc.actions_needed,
+            doc.file_at,
+            doc.status_id,
+            doc.old_track,
+            doc.is_active,
+            doc.for_archived,
+            doc.is_archived,
+            doc.created_at,
+            doc.updated_at,
+            doc.deleted_at
+          ]
+        );
+
 
       await restoreRoutes(archiveConnection, connection, doc.original_id);
 
