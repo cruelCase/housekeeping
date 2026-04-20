@@ -6,6 +6,7 @@ const dbConfig = {
   user: 'root',
   password: '',
   database: 'newdts',
+  port: 3306,
 };
 
 const dbConfigArchive = {
@@ -13,6 +14,7 @@ const dbConfigArchive = {
   user: 'root',
   password: '',
   database: 'uniquearchdoc',
+  port: 3306,
 };
 
 /* =========================
@@ -49,7 +51,7 @@ async function ensureDocumentSchema(connection: mysql.Connection) {
 }
 
 /* =========================
-   DB2 DOCUMENT SCHEMA
+   ARCHIVE DOCUMENT SCHEMA
 ========================= */
 async function ensureArchivedDocumentSchema(connection: mysql.Connection) {
   await connection.execute(`
@@ -65,24 +67,72 @@ async function ensureArchivedDocumentSchema(connection: mysql.Connection) {
 }
 
 /* =========================
-   DB2 ROUTES SCHEMA (FIXED)
+   ARCHIVE ROUTE SCHEMA
 ========================= */
 async function ensureArchivedRoutesSchema(connection: mysql.Connection) {
   await connection.execute(`
     CREATE TABLE IF NOT EXISTS archived_doc_routes (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      original_route_id INT NOT NULL,
-      original_document_id INT NOT NULL,
-      tracking_code VARCHAR(255),
+
+      dts_route_original_id INT NOT NULL,
+      dts_document_id INT NOT NULL,
+
+      previous_route_id INT NULL,
+      from_user_id INT NULL,
+      from_section_id INT NULL,
+      for_section_id INT NULL,
+      for_user_id INT NULL,
+      receiver_user_id INT NULL,
+
+      route_purpose TEXT,
+      accepting_remarks TEXT,
+      actions_taken TEXT,
+
+      actedby_user_id INT NULL,
+
+      date_forwarded DATETIME NULL,
+      date_accepted DATETIME NULL,
+      date_acted DATETIME NULL,
+
+      io_type VARCHAR(50),
+      fwd_io_type VARCHAR(50),
+
+      status_id INT NULL,
+
+      deferred_reason TEXT,
+      deferred_date DATETIME NULL,
+      defer_until DATETIME NULL,
+
+      out_released_to VARCHAR(255),
+      logbook_page VARCHAR(100),
+
+      del_reason TEXT,
+      end_remarks TEXT,
+
+      autoaction_date DATETIME NULL,
+      date_parked DATETIME NULL,
+
+      oldstatus INT NULL,
+      active TINYINT(1),
+
+      route_accomplished TINYINT(1),
+
+      batch_release_id INT NULL,
+
+      is_qr_accept TINYINT(1),
+      for_archived TINYINT(1),
+
       created_at DATETIME,
-      route_data LONGTEXT,
-      archived_at DATETIME NOT NULL
+      updated_at DATETIME,
+      deleted_at DATETIME,
+
+      dts_route_archived_at DATETIME NOT NULL
     )
   `);
 }
 
 /* =========================
-   ARCHIVE ROUTES (FIXED - MOVES DATA NOT DELETE ONLY)
+   ARCHIVE ROUTES
 ========================= */
 async function archiveRoutes(
   sourceConn: mysql.Connection,
@@ -181,30 +231,124 @@ async function archiveRoutes(
         route.deleted_at
       ]
     );
-
   }
 }
 
+/* =========================
+   RESTORE ROUTES (OPTION A)
+========================= */
+async function restoreRoutes(
+  archiveConn: mysql.Connection,
+  sourceConn: mysql.Connection,
+  documentId: number
+) {
+  const [rows] = await archiveConn.execute(
+    'SELECT * FROM archived_doc_routes WHERE dts_document_id = ?',
+    [documentId]
+  );
+
+  const routes = rows as any[];
+
+  for (const route of routes) {
+    await sourceConn.execute(
+      `INSERT INTO dts_doc_routes (
+        dts_document_id,
+        previous_route_id,
+        from_user_id,
+        from_section_id,
+        for_section_id,
+        for_user_id,
+        receiver_user_id,
+        route_purpose,
+        accepting_remarks,
+        actions_taken,
+        actedby_user_id,
+        date_forwarded,
+        date_accepted,
+        date_acted,
+        io_type,
+        fwd_io_type,
+        status_id,
+        deferred_reason,
+        deferred_date,
+        defer_until,
+        out_released_to,
+        logbook_page,
+        del_reason,
+        end_remarks,
+        autoaction_date,
+        date_parked,
+        oldstatus,
+        active,
+        route_accomplished,
+        batch_release_id,
+        is_qr_accept,
+        for_archived,
+        created_at,
+        updated_at,
+        deleted_at
+      )
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      )`,
+      [
+        route.dts_document_id,
+        route.previous_route_id,
+        route.from_user_id,
+        route.from_section_id,
+        route.for_section_id,
+        route.for_user_id,
+        route.receiver_user_id,
+        route.route_purpose,
+        route.accepting_remarks,
+        route.actions_taken,
+        route.actedby_user_id,
+        route.date_forwarded,
+        route.date_accepted,
+        route.date_acted,
+        route.io_type,
+        route.fwd_io_type,
+        route.status_id,
+        route.deferred_reason,
+        route.deferred_date,
+        route.defer_until,
+        route.out_released_to,
+        route.logbook_page,
+        route.del_reason,
+        route.end_remarks,
+        route.autoaction_date,
+        route.date_parked,
+        route.oldstatus,
+        route.active,
+        route.route_accomplished,
+        route.batch_release_id,
+        route.is_qr_accept,
+        route.for_archived,
+        route.created_at,
+        route.updated_at,
+        route.deleted_at
+      ]
+    );
+  }
+
+  await archiveConn.execute(
+    'DELETE FROM archived_doc_routes WHERE dts_document_id = ?',
+    [documentId]
+  );
+}
 
 /* =========================
-   DELETE ROUTES (DB1 CLEANUP ONLY AFTER ARCHIVE)
+   DELETE ROUTES
 ========================= */
 async function deleteDocumentChildren(connection: mysql.Connection, documentId: number) {
-  try {
-    await connection.execute(
-      'DELETE FROM dts_doc_routes WHERE dts_document_id = ?',
-      [documentId]
-    );
-  } catch (error) {
-    const msg = (error as Error).message.toLowerCase();
-    if (!msg.includes('does not exist')) {
-      throw error;
-    }
-  }
+  await connection.execute(
+    'DELETE FROM dts_doc_routes WHERE dts_document_id = ?',
+    [documentId]
+  );
 }
 
 /* =========================
-   GET API (WITH FIXED COUNTS)
+   GET API (FIXED STATS)
 ========================= */
 export async function GET(request: NextRequest) {
   let connection;
@@ -263,7 +407,7 @@ export async function GET(request: NextRequest) {
     );
 
     /* =========================
-       FIXED STATS SECTION
+       STATS FIXED
     ========================= */
 
     let totalDocuments = 0;
@@ -302,6 +446,7 @@ export async function GET(request: NextRequest) {
       totalFiltered,
       totalPages: Math.ceil(totalFiltered / limit),
     });
+
   } catch (error) {
     console.error('GET error:', error);
     return NextResponse.json(
@@ -314,7 +459,7 @@ export async function GET(request: NextRequest) {
 }
 
 /* =========================
-   POST (CREATE DOCUMENT)
+   POST
 ========================= */
 export async function POST(request: NextRequest) {
   let connection;
@@ -326,21 +471,14 @@ export async function POST(request: NextRequest) {
     connection = await getConnection();
     await ensureDocumentSchema(connection);
 
-    const [result] = await connection.execute(
+    await connection.execute(
       `INSERT INTO dts_documents (tracking_code, created_at, archived)
        VALUES (?, NOW(), 0)`,
       [name]
     );
 
-    return NextResponse.json({
-      success: true,
-      id: (result as mysql.ResultSetHeader).insertId,
-    });
-  } catch (error) {
-    return NextResponse.json(
-      { message: 'Failed to create document.' },
-      { status: 500 }
-    );
+    return NextResponse.json({ success: true });
+
   } finally {
     if (connection) await connection.end();
   }
@@ -359,35 +497,21 @@ export async function PATCH(request: NextRequest) {
     const archived = Boolean(body?.archived);
 
     if (!id) {
-      return NextResponse.json(
-        { message: 'Invalid ID' },
-        { status: 400 }
-      );
+      return NextResponse.json({ message: 'Invalid ID' }, { status: 400 });
     }
 
-    /* =========================
-       ARCHIVE FLOW
-    ========================= */
+    /* ARCHIVE */
     if (archived) {
       connection = await getConnection();
-      await ensureDocumentSchema(connection);
 
       const [rows] = await connection.execute(
         'SELECT * FROM dts_documents WHERE id = ?',
         [id]
       );
 
-      if (!Array.isArray(rows) || rows.length === 0) {
-        return NextResponse.json(
-          { message: 'Document not found.' },
-          { status: 404 }
-        );
-      }
-
       const doc = (rows as any)[0];
 
       archiveConnection = await getConnectionArchive();
-      await ensureArchivedDocumentSchema(archiveConnection);
 
       await archiveConnection.execute(
         `INSERT INTO archived_documents (
@@ -400,10 +524,7 @@ export async function PATCH(request: NextRequest) {
         [doc.id, doc.tracking_code, doc.created_at]
       );
 
-      /* 🔥 MOVE ROUTES TO ARCHIVE (NOT DELETE FIRST) */
       await archiveRoutes(connection, archiveConnection, id);
-
-      /* DELETE ROUTES AFTER SUCCESSFUL ARCHIVE */
       await deleteDocumentChildren(connection, id);
 
       await connection.execute(
@@ -412,29 +533,18 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    /* =========================
-       RESTORE FLOW
-    ========================= */
+    /* RESTORE */
     else {
       archiveConnection = await getConnectionArchive();
-      await ensureArchivedDocumentSchema(archiveConnection);
 
       const [rows] = await archiveConnection.execute(
         'SELECT * FROM archived_documents WHERE original_id = ?',
         [id]
       );
 
-      if (!Array.isArray(rows) || rows.length === 0) {
-        return NextResponse.json(
-          { message: 'Archived document not found.' },
-          { status: 404 }
-        );
-      }
-
       const doc = (rows as any)[0];
 
       connection = await getConnection();
-      await ensureDocumentSchema(connection);
 
       await connection.execute(
         `INSERT INTO dts_documents (
@@ -444,11 +554,11 @@ export async function PATCH(request: NextRequest) {
           archived,
           archived_at
         ) VALUES (?, ?, ?, 0, NULL)
-        ON DUPLICATE KEY UPDATE
-          archived = 0,
-          archived_at = NULL`,
+        ON DUPLICATE KEY UPDATE archived = 0`,
         [doc.original_id, doc.tracking_code, doc.created_at]
       );
+
+      await restoreRoutes(archiveConnection, connection, doc.original_id);
 
       await archiveConnection.execute(
         'DELETE FROM archived_documents WHERE original_id = ?',
@@ -457,6 +567,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     return NextResponse.json({ success: true });
+
   } catch (error) {
     console.error('PATCH error:', error);
     return NextResponse.json(
