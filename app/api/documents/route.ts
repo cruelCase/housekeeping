@@ -142,9 +142,12 @@ async function archiveRoutes(
   await ensureArchivedRoutesSchema(archiveConn);
 
   const [rows] = await sourceConn.execute(
-    'SELECT * FROM dts_doc_routes WHERE dts_document_id = ?',
-    [documentId]
-  );
+  `SELECT * FROM dts_doc_routes
+   WHERE dts_document_id = ?
+   ORDER BY id DESC`,
+  [documentId]
+);
+
 
   const routes = rows as any[];
 
@@ -243,9 +246,12 @@ async function restoreRoutes(
   documentId: number
 ) {
   const [rows] = await archiveConn.execute(
-    'SELECT * FROM archived_doc_routes WHERE dts_document_id = ?',
-    [documentId]
-  );
+  `SELECT * FROM archived_doc_routes 
+   WHERE dts_document_id = ?
+   ORDER BY id ASC`,
+  [documentId]
+);
+
 
   const routes = rows as any[];
 
@@ -341,11 +347,23 @@ async function restoreRoutes(
    DELETE ROUTES
 ========================= */
 async function deleteDocumentChildren(connection: mysql.Connection, documentId: number) {
-  await connection.execute(
-    'DELETE FROM dts_doc_routes WHERE dts_document_id = ?',
+  const [rows] = await connection.execute(
+    `SELECT id FROM dts_doc_routes
+     WHERE dts_document_id = ?
+     ORDER BY id DESC`,
     [documentId]
   );
+
+  const routes = rows as any[];
+
+  for (const route of routes) {
+    await connection.execute(
+      'DELETE FROM dts_doc_routes WHERE id = ?',
+      [route.id]
+    );
+  }
 }
+
 
 /* =========================
    GET API (FIXED STATS)
