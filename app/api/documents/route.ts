@@ -25,6 +25,7 @@ async function getConnection() {
 }
 
 async function getConnectionArchive() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const tempConfig = { ...dbConfigArchive } as any;
   delete tempConfig.database;
 
@@ -148,7 +149,7 @@ async function archiveRoutes(
   [documentId]
 );
 
-
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const routes = rows as any[];
 
   for (const route of routes) {
@@ -252,7 +253,7 @@ async function restoreRoutes(
      ORDER BY id ASC`,
     [documentId]
   );
-
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const routes = rows as any[];
 
   // 2. Create ID mapping (OLD → NEW)
@@ -260,6 +261,7 @@ async function restoreRoutes(
 
   // 3. FIRST PASS: Insert WITHOUT previous_route_id
   for (const route of routes) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [result]: any = await sourceConn.execute(
       `INSERT INTO dts_doc_routes (
         dts_document_id,
@@ -382,6 +384,7 @@ async function deleteDocumentChildren(connection: mysql.Connection, documentId: 
     [documentId]
   );
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const routes = rows as any[];
 
   for (const route of routes) {
@@ -405,6 +408,16 @@ export async function GET(request: NextRequest) {
     const page = Number(url.searchParams.get('page') ?? '1') || 1;
     const archivedParam = url.searchParams.get('archived');
     const search = String(url.searchParams.get('search') ?? '').trim();
+    const sort = String(url.searchParams.get('sort') ?? 'newest');
+
+    const orderDirection = sort === 'oldest' ? 'ASC' : 'DESC';
+
+    const orderColumn =
+        isArchivedQuery && sort === 'newest'
+          ? 'archived_at'
+          : isArchivedQuery && sort === 'oldest'
+          ? 'archived_at'
+          : 'created_at';
 
     const limit = 10;
     const offset = (page - 1) * limit;
@@ -418,7 +431,9 @@ export async function GET(request: NextRequest) {
       await ensureDocumentSchema(connection);
     }
 
+
     const whereConditions: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const params: any[] = [];
 
     if (!isArchivedQuery) {
@@ -443,14 +458,15 @@ export async function GET(request: NextRequest) {
       ? 'original_id AS id, tracking_code, created_at, archived, archived_at'
       : '*';
 
-    const [rows] = await connection.execute(
+    const [rows] = await connection.execute(  
       `SELECT ${selectFields}
-       FROM ${tableName}
-       ${whereClause}
-       ORDER BY created_at DESC
-       LIMIT ? OFFSET ?`,
+      FROM ${tableName}
+      ${whereClause}
+      ORDER BY archived_at ${orderDirection}
+      LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
+
 
     /* =========================
        STATS FIXED
@@ -464,6 +480,7 @@ export async function GET(request: NextRequest) {
     const [activeRows] = await activeConn.execute(
       'SELECT COUNT(*) AS activeCount FROM dts_documents WHERE archived = 0'
     );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     activeCount = (activeRows as any)[0]?.activeCount || 0;
     await activeConn.end();
 
@@ -471,6 +488,7 @@ export async function GET(request: NextRequest) {
     const [archivedRows] = await archiveConn.execute(
       'SELECT COUNT(*) AS archivedCount FROM archived_documents'
     );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     archivedCount = (archivedRows as any)[0]?.archivedCount || 0;
     await archiveConn.end();
 
@@ -480,7 +498,7 @@ export async function GET(request: NextRequest) {
       `SELECT COUNT(*) AS totalFiltered FROM ${tableName} ${whereClause}`,
       params
     );
-
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const totalFiltered = (filteredRows as any)[0]?.totalFiltered || 0;
 
     return NextResponse.json({
@@ -555,7 +573,7 @@ async function safeDeleteDocument(documentId: number) {
     if (!Array.isArray(docRows) || docRows.length === 0) {
       throw new Error('Document not found');
     }
-
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     const doc = (docRows as any)[0];
 
     // 2. Archive document (if not already archived)
@@ -674,6 +692,7 @@ export async function PATCH(request: NextRequest) {
         [id]
       );
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const doc = (rows as any)[0];
 
       await archiveConnection.execute(
@@ -755,6 +774,7 @@ export async function PATCH(request: NextRequest) {
         [id]
       );
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const doc = (rows as any)[0];
 
       await connection.execute(
@@ -842,9 +862,10 @@ export async function PATCH(request: NextRequest) {
           doc.deleted_at
         ]
       );
-
+      // Restore routes
       await restoreRoutes(archiveConnection, connection, doc.original_id);
 
+      // Delete from archive after restore
       await archiveConnection.execute(
         'DELETE FROM archived_documents WHERE original_id = ?',
         [id]

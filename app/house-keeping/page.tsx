@@ -55,6 +55,8 @@ export default function HouseKeepingPage() {
   const [showArchiveDateModal, setShowArchiveDateModal] = useState(false);
   const [archiveDate, setArchiveDate] = useState('');
 
+  const [sortOrder, setSortOrder] = useState<'oldest' | 'newest'>('newest');
+
   const fetchDocuments = async (
   page: number,
   archived: boolean,
@@ -246,6 +248,18 @@ export default function HouseKeepingPage() {
 
   const pageDocuments = documents;
 
+  const sortedArchivedDocuments = useMemo(() => {
+  if (activeTab !== 'archived') return pageDocuments;
+
+  return [...pageDocuments].sort((a, b) => {
+    const dateA = new Date(a.archivedAt || a.createdAt).getTime();
+    const dateB = new Date(b.archivedAt || b.createdAt).getTime();
+
+    return sortOrder === 'oldest'
+      ? dateA - dateB
+      : dateB - dateA;
+  });
+}, [pageDocuments, sortOrder, activeTab]);
 
 
   const filteredDocuments = useMemo(() => {
@@ -484,7 +498,7 @@ export default function HouseKeepingPage() {
                     </h3>
 
                     {pageDocuments.length > 0 && (
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <button
                           onClick={() => setSelectedArchivedDocs(pageDocuments.map(doc => doc.id))}
                           className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
@@ -504,6 +518,15 @@ export default function HouseKeepingPage() {
                         >
                           Restore Selected ({selectedArchivedDocs.length})
                         </button>
+                        <button
+                            onClick={() =>
+                              setSortOrder((prev) => (prev === 'oldest' ? 'newest' : 'oldest'))
+                            }
+                            className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                          >
+                            {sortOrder === 'oldest' ? 'Oldest First' : 'Newest First'}
+                          </button>
+
                       </div>
                     )}
                   </div>
@@ -514,7 +537,7 @@ export default function HouseKeepingPage() {
                     </p>
                   ) : (
                     <div className="space-y-3">
-                      {pageDocuments.map((doc) => (
+                      {sortedArchivedDocuments.map((doc) => (
                         <div
                           key={doc.id}
                           className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
