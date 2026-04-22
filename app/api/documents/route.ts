@@ -245,18 +245,22 @@ async function restoreRoutes(
   sourceConn: mysql.Connection,
   documentId: number
 ) {
+  // 1. Get routes in correct order (VERY IMPORTANT)
   const [rows] = await archiveConn.execute(
-  `SELECT * FROM archived_doc_routes 
-   WHERE dts_document_id = ?
-   ORDER BY id ASC`,
-  [documentId]
-);
-
+    `SELECT * FROM archived_doc_routes 
+     WHERE dts_document_id = ?
+     ORDER BY id ASC`,
+    [documentId]
+  );
 
   const routes = rows as any[];
 
+  // 2. Create ID mapping (OLD → NEW)
+  const idMap = new Map<number, number>();
+
+  // 3. FIRST PASS: Insert WITHOUT previous_route_id
   for (const route of routes) {
-    await sourceConn.execute(
+    const [result]: any = await sourceConn.execute(
       `INSERT INTO dts_doc_routes (
         dts_document_id,
         previous_route_id,
@@ -295,11 +299,10 @@ async function restoreRoutes(
         deleted_at
       )
       VALUES (
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       )`,
       [
         route.dts_document_id,
-        route.previous_route_id,
         route.from_user_id,
         route.from_section_id,
         route.for_section_id,
@@ -335,13 +338,38 @@ async function restoreRoutes(
         route.deleted_at
       ]
     );
+
+    // Save mapping: OLD ID → NEW ID
+    idMap.set(route.dts_route_original_id, result.insertId);
   }
 
+  // 4. SECOND PASS: Fix previous_route_id
+      for (const route of routes) {
+      if (route.previous_route_id) {
+
+        const newPreviousId = idMap.get(route.previous_route_id);
+        const currentNewId = idMap.get(route.dts_route_original_id);
+
+        // SAFETY CHECK (VERY IMPORTANT)
+        if (!newPreviousId || !currentNewId) continue;
+
+        await sourceConn.execute(
+          `UPDATE dts_doc_routes
+          SET previous_route_id = ?
+          WHERE id = ?`,
+          [newPreviousId, currentNewId]
+        );
+      }
+    }
+
+
+  // 5. Delete from archive after restore
   await archiveConn.execute(
     'DELETE FROM archived_doc_routes WHERE dts_document_id = ?',
     [documentId]
   );
 }
+
 
 /* =========================
    DELETE ROUTES
@@ -630,9 +658,16 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ message: 'Invalid ID' }, { status: 400 });
     }
 
-    /* ARCHIVE */
+    connection = await getConnection();
+    archiveConnection = await getConnectionArchive();
+
+    await connection.beginTransaction();
+    await archiveConnection.beginTransaction();
+
+    /* =========================
+       ARCHIVE
+    ========================= */
     if (archived) {
-      connection = await getConnection();
 
       const [rows] = await connection.execute(
         'SELECT * FROM dts_documents WHERE id = ?',
@@ -641,68 +676,65 @@ export async function PATCH(request: NextRequest) {
 
       const doc = (rows as any)[0];
 
-      archiveConnection = await getConnectionArchive();
-
       await archiveConnection.execute(
-          `INSERT INTO archived_documents (
-            original_id,
-            tracking_code,
-            mo_yr,
-            issued_num,
-            description,
-            guestdoc_id,
-            dts_doc_type_id,
-            tracking_issuedby_id,
-            fromuser_id,
-            from_section_id,
-            guest_origin_name,
-            guest_origin_organization,
-            logbook_page,
-            datetime_first_accepted,
-            actions_needed,
-            file_at,
-            status_id,
-            old_track,
-            is_active,
-            for_archived,
-            is_archived,
-            created_at,
-            updated_at,
-            deleted_at,
-            archived,
-            archived_at
-          )
-          VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW()
-          )`,
-          [
-            doc.id,
-            doc.tracking_code,
-            doc.mo_yr,
-            doc.issued_num,
-            doc.description,
-            doc.guestdoc_id,
-            doc.dts_doc_type_id,
-            doc.tracking_issuedby_id,
-            doc.fromuser_id,
-            doc.from_section_id,
-            doc.guest_origin_name,
-            doc.guest_origin_organization,
-            doc.logbook_page,
-            doc.datetime_first_accepted,
-            doc.actions_needed,
-            doc.file_at,
-            doc.status_id,
-            doc.old_track,
-            doc.is_active,
-            doc.for_archived,
-            doc.is_archived,
-            doc.created_at,
-            doc.updated_at,
-            doc.deleted_at
-          ]
-        );
-
+        `INSERT INTO archived_documents (
+          original_id,
+          tracking_code,
+          mo_yr,
+          issued_num,
+          description,
+          guestdoc_id,
+          dts_doc_type_id,
+          tracking_issuedby_id,
+          fromuser_id,
+          from_section_id,
+          guest_origin_name,
+          guest_origin_organization,
+          logbook_page,
+          datetime_first_accepted,
+          actions_needed,
+          file_at,
+          status_id,
+          old_track,
+          is_active,
+          for_archived,
+          is_archived,
+          created_at,
+          updated_at,
+          deleted_at,
+          archived,
+          archived_at
+        )
+        VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW()
+        )`,
+        [
+          doc.id,
+          doc.tracking_code,
+          doc.mo_yr,
+          doc.issued_num,
+          doc.description,
+          doc.guestdoc_id,
+          doc.dts_doc_type_id,
+          doc.tracking_issuedby_id,
+          doc.fromuser_id,
+          doc.from_section_id,
+          doc.guest_origin_name,
+          doc.guest_origin_organization,
+          doc.logbook_page,
+          doc.datetime_first_accepted,
+          doc.actions_needed,
+          doc.file_at,
+          doc.status_id,
+          doc.old_track,
+          doc.is_active,
+          doc.for_archived,
+          doc.is_archived,
+          doc.created_at,
+          doc.updated_at,
+          doc.deleted_at
+        ]
+      );
 
       await archiveRoutes(connection, archiveConnection, id);
       await deleteDocumentChildren(connection, id);
@@ -713,9 +745,10 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    /* RESTORE */
+    /* =========================
+       RESTORE
+    ========================= */
     else {
-      archiveConnection = await getConnectionArchive();
 
       const [rows] = await archiveConnection.execute(
         'SELECT * FROM archived_documents WHERE original_id = ?',
@@ -724,94 +757,91 @@ export async function PATCH(request: NextRequest) {
 
       const doc = (rows as any)[0];
 
-      connection = await getConnection();
-
       await connection.execute(
-          `INSERT INTO dts_documents (
-            id,
-            tracking_code,
-            mo_yr,
-            issued_num,
-            description,
-            guestdoc_id,
-            dts_doc_type_id,
-            tracking_issuedby_id,
-            fromuser_id,
-            from_section_id,
-            guest_origin_name,
-            guest_origin_organization,
-            logbook_page,
-            datetime_first_accepted,
-            actions_needed,
-            file_at,
-            status_id,
-            old_track,
-            is_active,
-            for_archived,
-            is_archived,
-            created_at,
-            updated_at,
-            deleted_at,
-            archived,
-            archived_at
-          )
-          VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL
-          )
-          ON DUPLICATE KEY UPDATE
-            tracking_code = VALUES(tracking_code),
-            mo_yr = VALUES(mo_yr),
-            issued_num = VALUES(issued_num),
-            description = VALUES(description),
-            guestdoc_id = VALUES(guestdoc_id),
-            dts_doc_type_id = VALUES(dts_doc_type_id),
-            tracking_issuedby_id = VALUES(tracking_issuedby_id),
-            fromuser_id = VALUES(fromuser_id),
-            from_section_id = VALUES(from_section_id),
-            guest_origin_name = VALUES(guest_origin_name),
-            guest_origin_organization = VALUES(guest_origin_organization),
-            logbook_page = VALUES(logbook_page),
-            datetime_first_accepted = VALUES(datetime_first_accepted),
-            actions_needed = VALUES(actions_needed),
-            file_at = VALUES(file_at),
-            status_id = VALUES(status_id),
-            old_track = VALUES(old_track),
-            is_active = VALUES(is_active),
-            for_archived = VALUES(for_archived),
-            is_archived = VALUES(is_archived),
-            updated_at = VALUES(updated_at),
-            deleted_at = VALUES(deleted_at),
-            archived = 0,
-            archived_at = NULL
-          `,
-          [
-            doc.original_id,
-            doc.tracking_code,
-            doc.mo_yr,
-            doc.issued_num,
-            doc.description,
-            doc.guestdoc_id,
-            doc.dts_doc_type_id,
-            doc.tracking_issuedby_id,
-            doc.fromuser_id,
-            doc.from_section_id,
-            doc.guest_origin_name,
-            doc.guest_origin_organization,
-            doc.logbook_page,
-            doc.datetime_first_accepted,
-            doc.actions_needed,
-            doc.file_at,
-            doc.status_id,
-            doc.old_track,
-            doc.is_active,
-            doc.for_archived,
-            doc.is_archived,
-            doc.created_at,
-            doc.updated_at,
-            doc.deleted_at
-          ]
-        );
-
+        `INSERT INTO dts_documents (
+          id,
+          tracking_code,
+          mo_yr,
+          issued_num,
+          description,
+          guestdoc_id,
+          dts_doc_type_id,
+          tracking_issuedby_id,
+          fromuser_id,
+          from_section_id,
+          guest_origin_name,
+          guest_origin_organization,
+          logbook_page,
+          datetime_first_accepted,
+          actions_needed,
+          file_at,
+          status_id,
+          old_track,
+          is_active,
+          for_archived,
+          is_archived,
+          created_at,
+          updated_at,
+          deleted_at,
+          archived,
+          archived_at
+        )
+        VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL
+        )
+        ON DUPLICATE KEY UPDATE
+          tracking_code = VALUES(tracking_code),
+          mo_yr = VALUES(mo_yr),
+          issued_num = VALUES(issued_num),
+          description = VALUES(description),
+          guestdoc_id = VALUES(guestdoc_id),
+          dts_doc_type_id = VALUES(dts_doc_type_id),
+          tracking_issuedby_id = VALUES(tracking_issuedby_id),
+          fromuser_id = VALUES(fromuser_id),
+          from_section_id = VALUES(from_section_id),
+          guest_origin_name = VALUES(guest_origin_name),
+          guest_origin_organization = VALUES(guest_origin_organization),
+          logbook_page = VALUES(logbook_page),
+          datetime_first_accepted = VALUES(datetime_first_accepted),
+          actions_needed = VALUES(actions_needed),
+          file_at = VALUES(file_at),
+          status_id = VALUES(status_id),
+          old_track = VALUES(old_track),
+          is_active = VALUES(is_active),
+          for_archived = VALUES(for_archived),
+          is_archived = VALUES(is_archived),
+          updated_at = VALUES(updated_at),
+          deleted_at = VALUES(deleted_at),
+          archived = 0,
+          archived_at = NULL
+        `,
+        [
+          doc.original_id,
+          doc.tracking_code,
+          doc.mo_yr,
+          doc.issued_num,
+          doc.description,
+          doc.guestdoc_id,
+          doc.dts_doc_type_id,
+          doc.tracking_issuedby_id,
+          doc.fromuser_id,
+          doc.from_section_id,
+          doc.guest_origin_name,
+          doc.guest_origin_organization,
+          doc.logbook_page,
+          doc.datetime_first_accepted,
+          doc.actions_needed,
+          doc.file_at,
+          doc.status_id,
+          doc.old_track,
+          doc.is_active,
+          doc.for_archived,
+          doc.is_archived,
+          doc.created_at,
+          doc.updated_at,
+          doc.deleted_at
+        ]
+      );
 
       await restoreRoutes(archiveConnection, connection, doc.original_id);
 
@@ -821,14 +851,22 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
+    await connection.commit();
+    await archiveConnection.commit();
+
     return NextResponse.json({ success: true });
 
   } catch (error) {
     console.error('PATCH error:', error);
+
+    if (connection) await connection.rollback();
+    if (archiveConnection) await archiveConnection.rollback();
+
     return NextResponse.json(
       { message: 'Failed to update document.' },
       { status: 500 }
     );
+
   } finally {
     if (connection) await connection.end();
     if (archiveConnection) await archiveConnection.end();
