@@ -60,7 +60,28 @@ async function ensureArchivedDocumentSchema(connection: mysql.Connection) {
       id INT AUTO_INCREMENT PRIMARY KEY,
       original_id INT NOT NULL,
       tracking_code VARCHAR(255) NOT NULL,
-      created_at DATETIME NOT NULL,
+      mo_yr VARCHAR(50) NULL,
+      issued_num VARCHAR(100) NULL,
+      description TEXT NULL,
+      guestdoc_id INT NULL,
+      dts_doc_type_id INT NULL,
+      tracking_issuedby_id INT NULL,
+      fromuser_id INT NULL,
+      from_section_id INT NULL,
+      guest_origin_name VARCHAR(255) NULL,
+      guest_origin_organization VARCHAR(255) NULL,
+      logbook_page VARCHAR(100) NULL,
+      datetime_first_accepted DATETIME NULL,
+      actions_needed TEXT NULL,
+      file_at VARCHAR(255) NULL,
+      status_id INT NULL,
+      old_track VARCHAR(255) NULL,
+      is_active TINYINT(1) NULL,
+      for_archived TINYINT(1) NULL,
+      is_archived TINYINT(1) NULL,
+      created_at DATETIME NULL,
+      updated_at DATETIME NULL,
+      deleted_at DATETIME NULL,
       archived TINYINT(1) NOT NULL DEFAULT 1,
       archived_at DATETIME NULL
     )
@@ -256,6 +277,11 @@ async function restoreRoutes(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const routes = rows as any[];
 
+  if (routes.length === 0) {
+    console.warn(`restoreRoutes: No archived routes found for dts_document_id=${documentId}`);
+    return;
+  }
+
   // 2. Create ID mapping (OLD → NEW)
   const idMap = new Map<number, number>();
 
@@ -301,7 +327,7 @@ async function restoreRoutes(
         deleted_at
       )
       VALUES (
-        ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? 
       )`,
       [
         route.dts_document_id,
@@ -353,7 +379,12 @@ async function restoreRoutes(
         const currentNewId = idMap.get(route.dts_route_original_id);
 
         // SAFETY CHECK (VERY IMPORTANT)
-        if (!newPreviousId || !currentNewId) continue;
+      if (!newPreviousId || !currentNewId) {
+          console.warn(
+            `restoreRoutes: Could not remap previous_route_id=${route.previous_route_id} for route original_id=${route.dts_route_original_id}`
+          );
+          continue;
+        }
 
         await sourceConn.execute(
           `UPDATE dts_doc_routes
@@ -377,22 +408,14 @@ async function restoreRoutes(
    DELETE ROUTES
 ========================= */
 async function deleteDocumentChildren(connection: mysql.Connection, documentId: number) {
-  const [rows] = await connection.execute(
-    `SELECT id FROM dts_doc_routes
-     WHERE dts_document_id = ?
-     ORDER BY id DESC`,
+  await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
+
+  await connection.execute(
+    'DELETE FROM dts_doc_routes WHERE dts_document_id = ?',
     [documentId]
   );
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const routes = rows as any[];
-
-  for (const route of routes) {
-    await connection.execute(
-      'DELETE FROM dts_doc_routes WHERE id = ?',
-      [route.id]
-    );
-  }
+  await connection.execute('SET FOREIGN_KEY_CHECKS = 1');
 }
 
 
@@ -412,14 +435,7 @@ export async function GET(request: NextRequest) {
 
     const orderDirection = sort === 'oldest' ? 'ASC' : 'DESC';
 
-    const orderColumn =
-        isArchivedQuery && sort === 'newest'
-          ? 'archived_at'
-          : isArchivedQuery && sort === 'oldest'
-          ? 'archived_at'
-          : 'created_at';
-
-    const limit = 10;
+    const limit = 10; 
     const offset = (page - 1) * limit;
 
     if (archivedParam === '1') {
@@ -462,7 +478,7 @@ export async function GET(request: NextRequest) {
       `SELECT ${selectFields}
       FROM ${tableName}
       ${whereClause}
-      ORDER BY archived_at ${orderDirection}
+      ORDER BY ${isArchivedQuery ? 'archived_at' : 'created_at'} ${orderDirection}
       LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
@@ -694,6 +710,16 @@ export async function PATCH(request: NextRequest) {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const doc = (rows as any)[0];
+
+
+      const [existing] = await archiveConnection.execute(
+        'SELECT id FROM archived_documents WHERE original_id = ?',
+        [id]
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if ((existing as any[]).length > 0) {
+        throw new Error(`Document ${id} is already archived.`);
+      }
 
       await archiveConnection.execute(
         `INSERT INTO archived_documents (
