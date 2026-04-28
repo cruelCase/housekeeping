@@ -24,9 +24,8 @@ interface DocumentsResponse {
   activeCount: number;
   archivedCount: number;
   page: number;
+  totalPages: number;
 }
-
-const PAGE_SIZE = 10;
 
 export default function HouseKeepingPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -36,6 +35,7 @@ export default function HouseKeepingPage() {
   const [totalDocuments, setTotalDocuments] = useState(0);
   const [activeCount, setActiveCount] = useState(0);
   const [archivedCount, setArchivedCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
 
   // FILTER STATES
   const [selectedDate, setSelectedDate] = useState('');
@@ -60,11 +60,12 @@ export default function HouseKeepingPage() {
   const fetchDocuments = async (
   page: number,
   archived: boolean,
-  search = ''
+  search = '',
+  dateFilter = ''
 ): Promise<DocumentsResponse | null> => {
   try {
     const response = await fetch(
-      `/api/documents?page=${page}&archived=${archived ? 1 : 0}&search=${encodeURIComponent(search)}`
+      `/api/documents?page=${page}&archived=${archived ? 1 : 0}&search=${encodeURIComponent(search)}&date=${encodeURIComponent(dateFilter)}`
     );
 
     const payload = await response.json();
@@ -85,7 +86,7 @@ export default function HouseKeepingPage() {
     page = 1,
     archived = activeTab === 'archived'
   ) => {
-    const payload = await fetchDocuments(page, archived, searchTerm);
+    const payload = await fetchDocuments(page, archived, searchTerm, appliedDateFilter);
 
     if (!payload) {
       setDocuments([]);
@@ -107,13 +108,14 @@ export default function HouseKeepingPage() {
     setTotalDocuments(payload.totalDocuments);
     setActiveCount(payload.activeCount);
     setArchivedCount(payload.archivedCount);
+    setTotalPages(payload.totalPages || 1);
     setCurrentPage(payload.page);
-  }, [activeTab, searchTerm]);
+  }, [activeTab, searchTerm, appliedDateFilter]);
 
   useEffect(() => {
     setCurrentPage(1);
     loadDocuments(1, activeTab === 'archived');
-  }, [searchTerm, activeTab, loadDocuments]);
+  }, [searchTerm, activeTab, appliedDateFilter, loadDocuments]);
 
   const addDocument = async () => {
     if (!newDocName.trim()) return;
@@ -193,6 +195,14 @@ export default function HouseKeepingPage() {
     setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
+  const selectAllArchivedCurrentPage = () => {
+    setSelectedArchivedDocs((prev) => {
+      const next = new Set(prev);
+      pageDocuments.forEach((doc) => next.add(doc.id));
+      return Array.from(next);
+    });
+  };
+
   const archiveSelectedDocuments = async () => {
     if (selectedDocs.length === 0) return;
 
@@ -239,9 +249,7 @@ export default function HouseKeepingPage() {
     setSearchTerm('');
   };
 
-  const pageCount = Math.ceil(
-    (activeTab === 'archived' ? archivedCount : activeCount) / PAGE_SIZE
-  );
+  const pageCount = totalPages;
 
   const hasPreviousPage = currentPage > 1;
   const hasNextPage = currentPage < pageCount;
@@ -262,21 +270,26 @@ export default function HouseKeepingPage() {
 }, [pageDocuments, sortOrder, activeTab]);
 
 
+  const getDocumentDate = (createdAt: string | Date) => {
+    if (createdAt instanceof Date) {
+      return createdAt.toISOString().split('T')[0];
+    }
+
+    return createdAt.split('T')[0].split(' ')[0];
+  };
+
   const filteredDocuments = useMemo(() => {
     if (activeTab !== 'active') return pageDocuments;
 
+    if (!appliedDateFilter) {
+      return pageDocuments;
+    }
+
     return pageDocuments.filter((doc) => {
-      const matchesDate = appliedDateFilter
-        ? new Date(doc.createdAt).toISOString().split('T')[0] === appliedDateFilter
-        : true;
-
-      const matchesSearch = searchTerm
-        ? doc.name.toLowerCase().includes(searchTerm.toLowerCase())
-        : true;
-
-      return matchesDate && matchesSearch;
+      const documentDate = getDocumentDate(doc.createdAt);
+      return documentDate === appliedDateFilter;
     });
-  }, [pageDocuments, appliedDateFilter, searchTerm, activeTab]);
+  }, [pageDocuments, appliedDateFilter, activeTab]);
 
   const applyDateFilter = () => {
     setAppliedDateFilter(selectedDate);
@@ -500,7 +513,7 @@ export default function HouseKeepingPage() {
                     {pageDocuments.length > 0 && (
                       <div className="flex flex-wrap gap-2">
                         <button
-                          onClick={() => setSelectedArchivedDocs(pageDocuments.map(doc => doc.id))}
+                          onClick={selectAllArchivedCurrentPage}
                           className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
                         >
                           Select All

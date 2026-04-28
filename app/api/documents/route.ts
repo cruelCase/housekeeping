@@ -431,6 +431,7 @@ export async function GET(request: NextRequest) {
     const page = Number(url.searchParams.get('page') ?? '1') || 1;
     const archivedParam = url.searchParams.get('archived');
     const search = String(url.searchParams.get('search') ?? '').trim();
+    const dateFilter = String(url.searchParams.get('date') ?? '').trim();
     const sort = String(url.searchParams.get('sort') ?? 'newest');
 
     const orderDirection = sort === 'oldest' ? 'ASC' : 'DESC';
@@ -461,6 +462,11 @@ export async function GET(request: NextRequest) {
         `(tracking_code LIKE ? OR DATE_FORMAT(created_at, '%Y-%m-%d') LIKE ?)`
       );
       params.push(`%${search}%`, `%${search}%`);
+    }
+
+    if (dateFilter) {
+      whereConditions.push('DATE(created_at) = ?');
+      params.push(dateFilter);
     }
 
     const whereClause =
