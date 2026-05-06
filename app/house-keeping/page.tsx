@@ -54,6 +54,9 @@ export default function HouseKeepingPage() {
   // MODAL STATES
   const [showArchiveDateModal, setShowArchiveDateModal] = useState(false);
   const [archiveDate, setArchiveDate] = useState('');
+  const [archiveConfirmStep, setArchiveConfirmStep] = useState<0 | 1 | 2>(0);
+  const [archiveDocsToArchive, setArchiveDocsToArchive] = useState<string[]>([]);
+  const [archiveModalMessage, setArchiveModalMessage] = useState('');
 
   const [sortOrder, setSortOrder] = useState<'oldest' | 'newest'>('newest');
 
@@ -216,29 +219,61 @@ export default function HouseKeepingPage() {
     setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
-  const archiveAllByDate = async () => {
-    if (!archiveDate) return;
-
-    const docsToArchive = documents.filter((doc) => {
-      const date = new Date(doc.createdAt).toISOString().split('T')[0];
-      return date === archiveDate;
-    });
-
-    if (docsToArchive.length === 0) {
-      setShowArchiveDateModal(false);
-      return;
-    }
-
-    await Promise.all(
-      docsToArchive.map((doc) => patchDocument(doc.id, true, false))
-    );
-
+  const resetArchiveModal = () => {
     setShowArchiveDateModal(false);
     setArchiveDate('');
-    setSelectedDocs([]);
-    await loadDocuments(currentPage, false);
-    setSuccessMessage(`${docsToArchive.length} Documents Archived`);
-    setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
+    setArchiveConfirmStep(0);
+    setArchiveDocsToArchive([]);
+    setArchiveModalMessage('');
+  };
+
+  const prepareArchiveAllByDate = async () => {
+    if (!archiveDate) return;
+
+    setArchiveModalMessage('');
+
+    try {
+      const response = await fetch(
+        `/api/documents?page=1&archived=0&date=${encodeURIComponent(archiveDate)}&limit=all`
+      );
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.message ?? 'Failed to fetch documents for archiving.');
+      }
+
+      const docsToArchive = payload.documents;
+
+      if (!docsToArchive || docsToArchive.length === 0) {
+        setArchiveModalMessage('No documents found for that date.');
+        return;
+      }
+
+      setArchiveDocsToArchive(docsToArchive.map((doc: any) => String(doc.id)));
+      setArchiveConfirmStep(1);
+    } catch (error) {
+      console.error('prepareArchiveAllByDate error:', error);
+      setArchiveModalMessage('Failed to load documents. Please try again.');
+    }
+  };
+
+  const archiveAllByDate = async () => {
+    if (archiveDocsToArchive.length === 0) return;
+
+    try {
+      await Promise.all(
+        archiveDocsToArchive.map((id) => patchDocument(id, true, false))
+      );
+
+      resetArchiveModal();
+      setSelectedDocs([]);
+      await loadDocuments(currentPage, false);
+      setSuccessMessage(`${archiveDocsToArchive.length} Documents Archived`);
+      setTimeout(() => setSuccessMessage(''), 3000);
+    } catch (error) {
+      console.error('archiveAllByDate error:', error);
+      setArchiveModalMessage('Failed to archive documents. Please try again.');
+    }
   };
 
   const handleTabChange = (tab: 'active' | 'archived') => {
@@ -269,27 +304,11 @@ export default function HouseKeepingPage() {
   });
 }, [pageDocuments, sortOrder, activeTab]);
 
-
-  const getDocumentDate = (createdAt: string | Date) => {
-    if (createdAt instanceof Date) {
-      return createdAt.toISOString().split('T')[0];
-    }
-
-    return createdAt.split('T')[0].split(' ')[0];
-  };
-
   const filteredDocuments = useMemo(() => {
     if (activeTab !== 'active') return pageDocuments;
 
-    if (!appliedDateFilter) {
-      return pageDocuments;
-    }
-
-    return pageDocuments.filter((doc) => {
-      const documentDate = getDocumentDate(doc.createdAt);
-      return documentDate === appliedDateFilter;
-    });
-  }, [pageDocuments, appliedDateFilter, activeTab]);
+    return pageDocuments;
+  }, [pageDocuments, activeTab]);
 
   const applyDateFilter = () => {
     setAppliedDateFilter(selectedDate);
@@ -666,31 +685,96 @@ export default function HouseKeepingPage() {
               Select a date to archive all active documents created on that date.
             </p>
 
-            <input
-              type="date"
-              value={archiveDate}
-              onChange={(e) => setArchiveDate(e.target.value)}
-              className="mt-4 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm"
-            />
+            {archiveModalMessage && (
+              <div className="mt-4 rounded-2xl bg-red-50 p-4 text-sm text-red-700">
+                {archiveModalMessage}
+              </div>
+            )}
 
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                onClick={() => {
-                  setShowArchiveDateModal(false);
-                  setArchiveDate('');
-                }}
-                className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
-              >
-                Cancel
-              </button>
+            {archiveConfirmStep === 0 && (
+              <>
+                <input
+                  type="date"
+                  value={archiveDate}
+                  onChange={(e) => setArchiveDate(e.target.value)}
+                  className="mt-4 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm"
+                />
 
-              <button
-                onClick={archiveAllByDate}
-                className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
-              >
-                Confirm Archive
-              </button>
-            </div>
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    onClick={resetArchiveModal}
+                    className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    onClick={prepareArchiveAllByDate}
+                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                  >
+                    Prepare Archive
+                  </button>
+                </div>
+              </>
+            )}
+
+            {archiveConfirmStep === 1 && (
+              <>
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  <p className="font-semibold text-slate-900">
+                    {archiveDocsToArchive.length} documents found for {archiveDate}
+                  </p>
+                  <p className="mt-2">
+                    This is the first confirmation. The next step will ask you to confirm once more before archiving.
+                  </p>
+                </div>
+
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    onClick={() => setArchiveConfirmStep(0)}
+                    className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+                  >
+                    Back
+                  </button>
+
+                  <button
+                    onClick={() => setArchiveConfirmStep(2)}
+                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                  >
+                    Continue
+                  </button>
+                </div>
+              </>
+            )}
+
+            {archiveConfirmStep === 2 && (
+              <>
+                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                  <p className="font-semibold text-slate-900">
+                    Confirm archive of {archiveDocsToArchive.length} documents created on {archiveDate}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-600">
+                    This action cannot be undone. All selected documents will be archived.
+                  </p>
+                </div>
+
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    onClick={() => setArchiveConfirmStep(1)}
+                    className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+                  >
+                    Back
+                  </button>
+
+                  <button
+                    onClick={archiveAllByDate}
+                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                  >
+                    Archive Now
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

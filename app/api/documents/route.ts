@@ -49,6 +49,12 @@ async function ensureDocumentSchema(connection: mysql.Connection) {
       archived_at DATETIME NULL
     )
   `);
+
+  await connection.execute(
+    `ALTER TABLE dts_documents
+     ADD COLUMN IF NOT EXISTS archived TINYINT(1) NOT NULL DEFAULT 0,
+     ADD COLUMN IF NOT EXISTS archived_at DATETIME NULL`
+  );
 }
 
 /* =========================
@@ -433,11 +439,12 @@ export async function GET(request: NextRequest) {
     const search = String(url.searchParams.get('search') ?? '').trim();
     const dateFilter = String(url.searchParams.get('date') ?? '').trim();
     const sort = String(url.searchParams.get('sort') ?? 'newest');
+    const limitParam = url.searchParams.get('limit');
 
     const orderDirection = sort === 'oldest' ? 'ASC' : 'DESC';
 
-    const limit = 10; 
-    const offset = (page - 1) * limit;
+    const limit = limitParam === 'all' ? 10000 : 10; // Large limit for 'all'
+    const offset = limitParam === 'all' ? 0 : (page - 1) * limit;
 
     if (archivedParam === '1') {
       connection = await getConnectionArchive();
@@ -528,9 +535,9 @@ export async function GET(request: NextRequest) {
       totalDocuments,
       activeCount,
       archivedCount,
-      page,
+      page: limitParam === 'all' ? 1 : page,
       totalFiltered,
-      totalPages: Math.ceil(totalFiltered / limit),
+      totalPages: limitParam === 'all' ? 1 : Math.ceil(totalFiltered / limit),
     });
 
   } catch (error) {
