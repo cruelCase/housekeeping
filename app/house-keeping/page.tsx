@@ -51,14 +51,33 @@ export default function HouseKeepingPage() {
   // SUCCESS MESSAGE
   const [successMessage, setSuccessMessage] = useState('');
 
+  type ArchiveScope = 'day' | 'month' | 'year' | 'decade';
+
   // MODAL STATES
   const [showArchiveDateModal, setShowArchiveDateModal] = useState(false);
+  const [archiveScope, setArchiveScope] = useState<ArchiveScope>('day');
   const [archiveDate, setArchiveDate] = useState('');
   const [archiveConfirmStep, setArchiveConfirmStep] = useState<0 | 1 | 2>(0);
   const [archiveDocsToArchive, setArchiveDocsToArchive] = useState<string[]>([]);
   const [archiveModalMessage, setArchiveModalMessage] = useState('');
+  const [isPreparingArchive, setIsPreparingArchive] = useState(false);
+  const [isArchiving, setIsArchiving] = useState(false);
+
+  // PROGRESS STATES
+  const [archiveProgress, setArchiveProgress] = useState(0);
+  const [archiveProgressText, setArchiveProgressText] = useState('');
 
   const [sortOrder, setSortOrder] = useState<'oldest' | 'newest'>('newest');
+  const [darkMode, setDarkMode] = useState(false);
+
+  const theme = {
+    page: darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900',
+    card: darkMode ? 'bg-slate-950 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900',
+    secondaryCard: darkMode ? 'bg-slate-950 border-slate-800 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-900',
+    input: darkMode ? 'bg-slate-950 text-slate-100 border-slate-800 placeholder-slate-400' : 'bg-slate-50 text-slate-900 border-slate-300 placeholder-slate-500',
+    button: darkMode ? 'bg-slate-950 text-slate-100 border-slate-800 hover:bg-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100',
+    pill: darkMode ? 'bg-black border-slate-800 text-slate-100' : 'bg-slate-200 border-slate-300 text-slate-700',
+  };
 
   const fetchDocuments = async (
   page: number,
@@ -173,6 +192,43 @@ export default function HouseKeepingPage() {
     }
   };
 
+  const bulkPatchDocuments = async (
+    documentIds: string[],
+    archived: boolean,
+    onProgress?: (processed: number, total: number) => void
+  ): Promise<boolean> => {
+    const batchSize = 100;
+    let processed = 0;
+
+    try {
+      for (let i = 0; i < documentIds.length; i += batchSize) {
+        const batch = documentIds.slice(i, i + batchSize);
+
+        const response = await fetch('/api/documents', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ ids: batch, archived }),
+        });
+
+        const payload = await response.json();
+
+        if (!response.ok) {
+          throw new Error(payload?.message ?? 'Failed to update documents.');
+        }
+
+        processed += batch.length;
+        onProgress?.(processed, documentIds.length);
+      }
+
+      return true;
+    } catch (error) {
+      console.error('bulkPatchDocuments error:', error);
+      return false;
+    }
+  };
+
   const archiveDocument = async (id: string) => {
     await patchDocument(id, true);
     setSuccessMessage('Document Archived');
@@ -188,13 +244,13 @@ export default function HouseKeepingPage() {
   const restoreSelectedArchived = async () => {
     if (selectedArchivedDocs.length === 0) return;
 
-    await Promise.all(
-      selectedArchivedDocs.map((id) => patchDocument(id, false))
-    );
+    const success = await bulkPatchDocuments(selectedArchivedDocs, false);
+    if (!success) return;
 
+    const restoredCount = selectedArchivedDocs.length;
     setSelectedArchivedDocs([]);
     await loadDocuments(currentPage, true);
-    setSuccessMessage(`${selectedArchivedDocs.length} Documents Restored`);
+    setSuccessMessage(`${restoredCount} Documents Restored`);
     setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
@@ -221,20 +277,124 @@ export default function HouseKeepingPage() {
 
   const resetArchiveModal = () => {
     setShowArchiveDateModal(false);
+    setArchiveScope('day');
     setArchiveDate('');
     setArchiveConfirmStep(0);
     setArchiveDocsToArchive([]);
     setArchiveModalMessage('');
+    setArchiveProgress(0);
+    setArchiveProgressText('');
+  };
+
+  const getArchiveDisplayLabel = () => {
+    switch (archiveScope) {
+      case 'day':
+        return 'day';
+      case 'month':
+        return 'month';
+      case 'year':
+        return 'year';
+      case 'decade':
+        return 'decade';
+      default:
+        return 'day';
+    }
+  };
+
+  const getArchiveInput = () => {
+    const currentYear = new Date().getFullYear();
+    const years = Array.from({ length: 30 }, (_, idx) => String(currentYear - idx));
+    const decades = Array.from({ length: 10 }, (_, idx) => {
+      const start = Math.floor((currentYear - idx * 10) / 10) * 10;
+      return `${start}-${start + 9}`;
+    });
+
+    switch (archiveScope) {
+      case 'month':
+        return (
+          <label className="block">
+            <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Month</span>
+            <input
+              type="month"
+              value={archiveDate}
+              onChange={(e) => setArchiveDate(e.target.value)}
+              className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
+            />
+          </label>
+        );
+      case 'year':
+        return (
+          <label className="block">
+            <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Year</span>
+            <select
+              value={archiveDate}
+              onChange={(e) => setArchiveDate(e.target.value)}
+              className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
+            >
+              <option value="">Select year</option>
+              {years.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+          </label>
+        );
+      case 'decade':
+        return (
+          <label className="block">
+            <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Decade</span>
+            <select
+              value={archiveDate}
+              onChange={(e) => setArchiveDate(e.target.value)}
+              className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
+            >
+              <option value="">Select decade</option>
+              {decades.map((decade) => (
+                <option key={decade} value={decade}>
+                  {decade}
+                </option>
+              ))}
+            </select>
+          </label>
+        );
+      default:
+        return (
+          <label className="block">
+            <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Date</span>
+            <input
+              type="date"
+              value={archiveDate}
+              onChange={(e) => setArchiveDate(e.target.value)}
+              className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
+            />
+          </label>
+        );
+    }
+  };
+
+  const normalizeArchiveValue = () => {
+    if (!archiveDate) return '';
+    if (archiveScope === 'decade') {
+      return archiveDate;
+    }
+
+    return archiveDate;
   };
 
   const prepareArchiveAllByDate = async () => {
-    if (!archiveDate) return;
+    const normalizedValue = normalizeArchiveValue();
+    if (!normalizedValue) {
+      setArchiveModalMessage('Please choose a valid ' + getArchiveDisplayLabel() + '.');
+      return;
+    }
 
     setArchiveModalMessage('');
+    setIsPreparingArchive(true);
 
     try {
       const response = await fetch(
-        `/api/documents?page=1&archived=0&date=${encodeURIComponent(archiveDate)}&limit=all`
+        `/api/documents?page=1&archived=0&limit=all&filterType=${archiveScope}&filterValue=${encodeURIComponent(normalizedValue)}`
       );
       const payload = await response.json();
 
@@ -245,7 +405,7 @@ export default function HouseKeepingPage() {
       const docsToArchive = payload.documents;
 
       if (!docsToArchive || docsToArchive.length === 0) {
-        setArchiveModalMessage('No documents found for that date.');
+        setArchiveModalMessage(`No documents found for the selected ${getArchiveDisplayLabel()}.`);
         return;
       }
 
@@ -254,16 +414,36 @@ export default function HouseKeepingPage() {
     } catch (error) {
       console.error('prepareArchiveAllByDate error:', error);
       setArchiveModalMessage('Failed to load documents. Please try again.');
+    } finally {
+      setIsPreparingArchive(false);
     }
   };
 
   const archiveAllByDate = async () => {
     if (archiveDocsToArchive.length === 0) return;
 
+    setIsArchiving(true);
+    setArchiveProgress(0);
+    setArchiveProgressText(`Archiving 0 of ${archiveDocsToArchive.length} documents...`);
+
     try {
-      await Promise.all(
-        archiveDocsToArchive.map((id) => patchDocument(id, true, false))
+      const success = await bulkPatchDocuments(
+        archiveDocsToArchive,
+        true,
+        (processed, total) => {
+          const percentage = Math.round((processed / total) * 100);
+          setArchiveProgress(percentage);
+          setArchiveProgressText(`Archiving ${processed} of ${total} documents...`);
+        }
       );
+
+      if (!success) {
+        setArchiveModalMessage('Failed to archive documents. Please try again.');
+        return;
+      }
+
+      setArchiveProgress(100);
+      setArchiveProgressText(`Completed archiving ${archiveDocsToArchive.length} documents`);
 
       resetArchiveModal();
       setSelectedDocs([]);
@@ -273,6 +453,8 @@ export default function HouseKeepingPage() {
     } catch (error) {
       console.error('archiveAllByDate error:', error);
       setArchiveModalMessage('Failed to archive documents. Please try again.');
+    } finally {
+      setIsArchiving(false);
     }
   };
 
@@ -321,40 +503,55 @@ export default function HouseKeepingPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className={`min-h-screen ${theme.page}`}>
       {successMessage && (
         <div className="fixed top-4 right-4 z-50 rounded-lg bg-green-500 px-4 py-2 text-white shadow-lg">
           {successMessage}
         </div>
       )}
       <div className="mx-auto max-w-6xl px-6 py-10">
-        <div className="mb-8 rounded-3xl bg-white p-8 shadow-lg shadow-slate-200/50">
+        <div className={`mb-8 rounded-3xl p-8 shadow-lg shadow-slate-200/50 ${theme.card}`}>
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-sky-600">
+              <p className="text-sm font-semibold uppercase tracking-[0.24em] text-sky-400">
                 Housekeeping Dashboard
               </p>
-              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+              <h1 className="mt-3 text-3xl font-semibold tracking-tight">
                 Simple archive manager
               </h1>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+              <p className="mt-2 max-w-2xl text-sm leading-6">
                 Add documents and archive them manually as needed.
               </p>
+
+              <div className="mt-4 flex items-center gap-3">
+                <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-600'}`}>
+                  {darkMode ? 'Night mode on' : 'Night mode off'}
+                </span>
+                <button
+                  onClick={() => setDarkMode((prev) => !prev)}
+                  className={`relative inline-flex h-9 w-20 items-center rounded-full border px-1 transition ${theme.pill}`}
+                  aria-label="Toggle night mode"
+                >
+                  <span
+                    className={`inline-block h-7 w-7 rounded-full bg-white shadow-sm transition-transform ${darkMode ? 'translate-x-10' : 'translate-x-0'}`}
+                  />
+                </button>
+              </div>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-[1.2fr_1fr_1fr]">
-              <div className="rounded-3xl bg-slate-50 p-4 shadow-sm ring-1 ring-slate-200">
-                <p className="text-sm text-slate-500">Total Documents</p>
+              <div className={`rounded-3xl p-4 shadow-sm ring-1 ${darkMode ? 'bg-slate-950 ring-slate-800 text-slate-100' : 'bg-slate-50 ring-slate-200 text-slate-900'}`}>
+                <p className={`text-sm ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>Total Documents</p>
                 <p className="mt-2 text-2xl font-semibold">{totalDocuments}</p>
               </div>
 
-              <div className="rounded-3xl bg-slate-50 p-4 shadow-sm ring-1 ring-slate-200">
-                <p className="text-sm text-slate-500">Active</p>
+              <div className={`rounded-3xl p-4 shadow-sm ring-1 ${darkMode ? 'bg-slate-950 ring-slate-800 text-slate-100' : 'bg-slate-50 ring-slate-200 text-slate-900'}`}>
+                <p className={`text-sm ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>Active</p>
                 <p className="mt-2 text-2xl font-semibold">{activeCount}</p>
               </div>
 
-              <div className="rounded-3xl bg-slate-50 p-4 shadow-sm ring-1 ring-slate-200">
-                <p className="text-sm text-slate-500">Archived</p>
+              <div className={`rounded-3xl p-4 shadow-sm ring-1 ${darkMode ? 'bg-slate-950 ring-slate-800 text-slate-100' : 'bg-slate-50 ring-slate-200 text-slate-900'}`}>
+                <p className={`text-sm ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>Archived</p>
                 <p className="mt-2 text-2xl font-semibold">{archivedCount}</p>
               </div>
             </div>
@@ -362,13 +559,13 @@ export default function HouseKeepingPage() {
         </div>
 
         <div className="grid gap-6 lg:grid-cols-[1.4fr_0.6fr]">
-          <section className="space-y-6 rounded-3xl bg-white p-6 shadow-lg shadow-slate-200/40">
+          <section className={`space-y-6 rounded-3xl p-6 shadow-lg shadow-slate-200/40 ${theme.card}`}>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
               <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
+                <p className={`text-sm font-semibold uppercase tracking-[0.2em] ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>
                   Add document
                 </p>
-                <h2 className="mt-2 text-2xl font-semibold text-slate-950">
+                <h2 className={`mt-2 text-2xl font-semibold ${darkMode ? 'text-slate-100' : 'text-slate-950'}`}>
                   Create a new file
                 </h2>
               </div>
@@ -379,7 +576,7 @@ export default function HouseKeepingPage() {
                   className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
                     activeTab === 'active'
                       ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      : `${darkMode ? 'bg-slate-800 text-slate-100 hover:bg-slate-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`
                   }`}
                 >
                   Active
@@ -390,34 +587,12 @@ export default function HouseKeepingPage() {
                   className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
                     activeTab === 'archived'
                       ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      : `${darkMode ? 'bg-slate-800 text-slate-100 hover:bg-slate-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`
                   }`}
                 >
                   Archive
                 </button>
               </div>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
-              <label className="block">
-                <span className="text-sm font-medium text-slate-700">
-                  Document name
-                </span>
-                <input
-                  type="text"
-                  value={newDocName}
-                  onChange={(event) => setNewDocName(event.target.value)}
-                  placeholder="e.g. Year-end report"
-                  className="mt-2 w-full rounded-3xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-sky-200"
-                />
-              </label>
-
-              <button
-                onClick={addDocument}
-                className="inline-flex items-center justify-center rounded-3xl bg-slate-950 px-6 py-3 text-sm font-semibold text-white transition hover:bg-slate-800"
-              >
-                Add document
-              </button>
             </div>
 
             {activeTab === 'active' && (
@@ -427,26 +602,26 @@ export default function HouseKeepingPage() {
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Search tracking code..."
-                  className="w-72 rounded-full border border-slate-300 px-4 py-2 text-sm"
+                  className={`w-72 rounded-full px-4 py-2 text-sm border ${theme.input}`}
                 />
 
                 <input
                   type="date"
                   value={selectedDate}
                   onChange={(e) => setSelectedDate(e.target.value)}
-                  className="rounded-full border border-slate-300 px-4 py-2 text-sm"
+                  className={`rounded-full px-4 py-2 text-sm border ${theme.input}`}
                 />
 
                 <button
                   onClick={applyDateFilter}
-                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                  className={`rounded-full px-4 py-2 text-sm font-semibold border ${theme.button}`}
                 >
                   Filter
                 </button>
 
                 <button
                   onClick={resetDateFilter}
-                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                  className={`rounded-full px-4 py-2 text-sm font-semibold border ${theme.button}`}
                 >
                   Reset
                 </button>
@@ -459,10 +634,13 @@ export default function HouseKeepingPage() {
                 </button>
 
                 <button
-                  onClick={() => setShowArchiveDateModal(true)}
+                  onClick={() => {
+                    resetArchiveModal();
+                    setShowArchiveDateModal(true);
+                  }}
                   className="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white"
                 >
-                  Archive All by Date
+                  Archive Many
                 </button>
               </div>
             )}
@@ -475,7 +653,7 @@ export default function HouseKeepingPage() {
                   </h3>
 
                   {filteredDocuments.length === 0 ? (
-                    <p className="mt-3 text-sm text-slate-600">
+                    <p className={`mt-3 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                       No active documents found.
                     </p>
                   ) : (
@@ -504,7 +682,7 @@ export default function HouseKeepingPage() {
                               <p className="font-semibold text-slate-950">
                                 {doc.name}
                               </p>
-                              <p className="text-sm text-slate-500">
+                              <p className={`text-sm ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>
                                 Created{' '}
                                 {new Date(doc.createdAt).toLocaleDateString()}
                               </p>
@@ -533,13 +711,13 @@ export default function HouseKeepingPage() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           onClick={selectAllArchivedCurrentPage}
-                          className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                          className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
                         >
                           Select All
                         </button>
                         <button
                           onClick={() => setSelectedArchivedDocs([])}
-                          className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                          className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
                         >
                           Deselect All
                         </button>
@@ -554,7 +732,7 @@ export default function HouseKeepingPage() {
                             onClick={() =>
                               setSortOrder((prev) => (prev === 'oldest' ? 'newest' : 'oldest'))
                             }
-                            className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold"
+                            className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
                           >
                             {sortOrder === 'oldest' ? 'Oldest First' : 'Newest First'}
                           </button>
@@ -564,7 +742,7 @@ export default function HouseKeepingPage() {
                   </div>
 
                   {pageDocuments.length === 0 ? (
-                    <p className="mt-3 text-sm text-slate-600">
+                    <p className={`mt-3 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                       No archived documents yet.
                     </p>
                   ) : (
@@ -594,7 +772,7 @@ export default function HouseKeepingPage() {
                               {doc.name}
                             </p>
 
-                            <div className="space-y-1 text-sm text-slate-500">
+<div className={`space-y-1 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>
                               <p>
                                 Created{' '}
                                 {new Date(doc.createdAt).toLocaleDateString()}
@@ -626,7 +804,7 @@ export default function HouseKeepingPage() {
               )}
             </div>
 
-            <div className="mt-6 flex items-center justify-between rounded-3xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+<div className={`mt-6 flex items-center justify-between rounded-3xl px-4 py-3 text-sm ${darkMode ? 'border-slate-800 bg-slate-950 text-slate-100' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
               <span>
                 Page {currentPage} of {pageCount || 1}
               </span>
@@ -640,7 +818,7 @@ export default function HouseKeepingPage() {
                     loadDocuments(nextPage, activeTab === 'archived');
                   }}
                   disabled={!hasPreviousPage}
-                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'}`}
                 >
                   Previous
                 </button>
@@ -653,7 +831,7 @@ export default function HouseKeepingPage() {
                     loadDocuments(nextPage, activeTab === 'archived');
                   }}
                   disabled={!hasNextPage}
-                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'}`}
                 >
                   Next
                 </button>
@@ -661,12 +839,12 @@ export default function HouseKeepingPage() {
             </div>
           </section>
 
-          <aside className="space-y-6 rounded-3xl bg-white p-6 shadow-lg shadow-slate-200/40">
-            <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-500">
+          <aside className={`space-y-6 rounded-3xl p-6 shadow-lg shadow-slate-200/40 ${theme.card}`}>
+            <div className={`rounded-3xl p-5 ${darkMode ? 'border-slate-700 bg-slate-800 text-slate-100' : 'border-slate-200 bg-slate-50 text-slate-900'}`}>
+              <p className={`text-sm font-semibold uppercase tracking-[0.2em] ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>
                 Archive section
               </p>
-              <p className="mt-3 text-sm leading-6 text-slate-600">
+              <p className={`mt-3 text-sm leading-6 ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                 Documents are grouped automatically based on archive status. Any document routes too old will be archived automatically.
               </p>
             </div>
@@ -676,13 +854,13 @@ export default function HouseKeepingPage() {
 
       {showArchiveDateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl">
-            <h3 className="text-xl font-semibold text-slate-950">
-              Archive Documents by Date
+          <div className={`w-full max-w-md rounded-3xl p-6 shadow-2xl ${theme.card}`}>
+            <h3 className={`text-xl font-semibold ${darkMode ? 'text-slate-100' : 'text-slate-950'}`}>
+              Archive Documents
             </h3>
 
-            <p className="mt-2 text-sm text-slate-600">
-              Select a date to archive all active documents created on that date.
+            <p className={`mt-2 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
+              Choose how you want to archive documents and enter the matching date range.
             </p>
 
             {archiveModalMessage && (
@@ -693,26 +871,49 @@ export default function HouseKeepingPage() {
 
             {archiveConfirmStep === 0 && (
               <>
-                <input
-                  type="date"
-                  value={archiveDate}
-                  onChange={(e) => setArchiveDate(e.target.value)}
-                  className="mt-4 w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm"
-                />
+                <div className="mt-4 space-y-4">
+                  <label className="block">
+                    <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Archive by</span>
+                    <select
+                      value={archiveScope}
+                      onChange={(e) => {
+                        setArchiveScope(e.target.value as ArchiveScope);
+                        setArchiveDate('');
+                        setArchiveModalMessage('');
+                      }}
+                      className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
+                    >
+                      <option value="day">Days</option>
+                      <option value="month">Months</option>
+                      <option value="year">Years</option>
+                      <option value="decade">Decades</option>
+                    </select>
+                  </label>
+
+                  <div>{getArchiveInput()}</div>
+                </div>
 
                 <div className="mt-6 flex justify-end gap-3">
                   <button
                     onClick={resetArchiveModal}
-                    className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+                    className={`rounded-full px-4 py-2 text-sm font-semibold border ${theme.button}`}
                   >
                     Cancel
                   </button>
 
                   <button
                     onClick={prepareArchiveAllByDate}
-                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                    disabled={isPreparingArchive}
+                    className="inline-flex items-center justify-center rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Prepare Archive
+                    {isPreparingArchive ? (
+                      <>
+                        <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                        Preparing...
+                      </>
+                    ) : (
+                      'Prepare Archive'
+                    )}
                   </button>
                 </div>
               </>
@@ -720,8 +921,8 @@ export default function HouseKeepingPage() {
 
             {archiveConfirmStep === 1 && (
               <>
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                  <p className="font-semibold text-slate-900">
+                <div className={`mt-4 rounded-2xl p-4 text-sm ${darkMode ? 'border-slate-800 bg-slate-950 text-slate-100' : 'border border-slate-200 bg-slate-50 text-slate-700'}`}>
+                  <p className={`font-semibold ${darkMode ? 'text-slate-100' : 'text-slate-900'}`}>
                     {archiveDocsToArchive.length} documents found for {archiveDate}
                   </p>
                   <p className="mt-2">
@@ -732,7 +933,7 @@ export default function HouseKeepingPage() {
                 <div className="mt-6 flex justify-end gap-3">
                   <button
                     onClick={() => setArchiveConfirmStep(0)}
-                    className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+                    className={`rounded-full px-4 py-2 text-sm font-semibold border ${theme.button}`}
                   >
                     Back
                   </button>
@@ -749,28 +950,53 @@ export default function HouseKeepingPage() {
 
             {archiveConfirmStep === 2 && (
               <>
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                  <p className="font-semibold text-slate-900">
+                <div className={`mt-4 rounded-2xl p-4 text-sm ${darkMode ? 'border-slate-800 bg-slate-950 text-slate-100' : 'border border-slate-200 bg-slate-50 text-slate-700'}`}>
+                  <p className={`font-semibold ${darkMode ? 'text-slate-100' : 'text-slate-900'}`}>
                     Confirm archive of {archiveDocsToArchive.length} documents created on {archiveDate}
                   </p>
-                  <p className="mt-2 text-sm text-slate-600">
+                  <p className={`mt-2 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                     This action cannot be undone. All selected documents will be archived.
                   </p>
                 </div>
 
+                {isArchiving && (
+                  <div className="mt-6">
+                    <div className={`mb-2 text-sm font-medium ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                      {archiveProgressText}
+                    </div>
+                    <div className={`h-2 w-full rounded-full ${darkMode ? 'bg-slate-800' : 'bg-slate-200'}`}>
+                      <div
+                        className="h-2 rounded-full bg-slate-900 transition-all duration-300 ease-out"
+                        style={{ width: `${archiveProgress}%` }}
+                      />
+                    </div>
+                    <div className={`mt-1 text-xs ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {archiveProgress}% complete
+                    </div>
+                  </div>
+                )}
+
                 <div className="mt-6 flex justify-end gap-3">
                   <button
                     onClick={() => setArchiveConfirmStep(1)}
-                    className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+                    className={`rounded-full px-4 py-2 text-sm font-semibold border ${theme.button}`}
                   >
                     Back
                   </button>
 
                   <button
                     onClick={archiveAllByDate}
-                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                    disabled={isArchiving}
+                    className="inline-flex items-center justify-center rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Archive Now
+                    {isArchiving ? (
+                      <>
+                        <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                        Archiving...
+                      </>
+                    ) : (
+                      'Archive Now'
+                    )}
                   </button>
                 </div>
               </>

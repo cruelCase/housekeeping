@@ -438,13 +438,16 @@ export async function GET(request: NextRequest) {
     const archivedParam = url.searchParams.get('archived');
     const search = String(url.searchParams.get('search') ?? '').trim();
     const dateFilter = String(url.searchParams.get('date') ?? '').trim();
+    const filterType = String(url.searchParams.get('filterType') ?? '').trim();
+    const filterValue = String(url.searchParams.get('filterValue') ?? '').trim();
     const sort = String(url.searchParams.get('sort') ?? 'newest');
     const limitParam = url.searchParams.get('limit');
 
     const orderDirection = sort === 'oldest' ? 'ASC' : 'DESC';
 
-    const limit = limitParam === 'all' ? 10000 : 10; // Large limit for 'all'
-    const offset = limitParam === 'all' ? 0 : (page - 1) * limit;
+    const limit = 10;
+    const offset = (page - 1) * limit;
+    const useLimit = limitParam !== 'all';
 
     if (archivedParam === '1') {
       connection = await getConnectionArchive();
@@ -471,7 +474,29 @@ export async function GET(request: NextRequest) {
       params.push(`%${search}%`, `%${search}%`);
     }
 
-    if (dateFilter) {
+    if (filterValue) {
+      switch (filterType) {
+        case 'month':
+          whereConditions.push("DATE_FORMAT(created_at, '%Y-%m') = ?");
+          params.push(filterValue);
+          break;
+        case 'year':
+          whereConditions.push('YEAR(created_at) = ?');
+          params.push(filterValue);
+          break;
+        case 'decade': {
+          const [start, end] = filterValue.split('-').map(Number);
+          if (!Number.isNaN(start) && !Number.isNaN(end)) {
+            whereConditions.push('created_at >= ? AND created_at < ?');
+            params.push(`${start}-01-01`, `${end + 1}-01-01`);
+          }
+          break;
+        }
+        default:
+          whereConditions.push('DATE(created_at) = ?');
+          params.push(filterValue);
+      }
+    } else if (dateFilter) {
       whereConditions.push('DATE(created_at) = ?');
       params.push(dateFilter);
     }
@@ -487,14 +512,15 @@ export async function GET(request: NextRequest) {
       ? 'original_id AS id, tracking_code, created_at, archived, archived_at'
       : '*';
 
-    const [rows] = await connection.execute(  
-      `SELECT ${selectFields}
+    const query = `SELECT ${selectFields}
       FROM ${tableName}
       ${whereClause}
       ORDER BY ${isArchivedQuery ? 'archived_at' : 'created_at'} ${orderDirection}
-      LIMIT ? OFFSET ?`,
-      [...params, limit, offset]
-    );
+      ${useLimit ? 'LIMIT ? OFFSET ?' : ''}`;
+
+    const queryParams = useLimit ? [...params, limit, offset] : params;
+
+    const [rows] = await connection.execute(query, queryParams);
 
 
     /* =========================
@@ -688,6 +714,172 @@ async function safeDeleteDocument(documentId: number) {
   }
 }
 
+/* =========================
+   ARCHIVE/RESTORE HELPERS
+========================= */
+async function archiveDocumentById(connection: mysql.Connection, archiveConnection: mysql.Connection, id: number) {
+  const [rows] = await connection.execute(
+    'SELECT * FROM dts_documents WHERE id = ?',
+    [id]
+  );
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const doc = (rows as any)[0];
+
+  const [existing] = await archiveConnection.execute(
+    'SELECT id FROM archived_documents WHERE original_id = ?',
+    [id]
+  );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if ((existing as any[]).length > 0) {
+    throw new Error(`Document ${id} is already archived.`);
+  }
+
+  await archiveConnection.execute(
+    `INSERT INTO archived_documents (
+      original_id,
+      tracking_code,
+      mo_yr,
+      issued_num,
+      description,
+      guestdoc_id,
+      dts_doc_type_id,
+      tracking_issuedby_id,
+      fromuser_id,
+      from_section_id,
+      guest_origin_name,
+      guest_origin_organization,
+      logbook_page,
+      datetime_first_accepted,
+      actions_needed,
+      file_at,
+      status_id,
+      old_track,
+      is_active,
+      for_archived,
+      is_archived,
+      created_at,
+      updated_at,
+      deleted_at,
+      archived,
+      archived_at
+    )
+    VALUES (
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW()
+    )`,
+    [
+      doc.id,
+      doc.tracking_code,
+      doc.mo_yr,
+      doc.issued_num,
+      doc.description,
+      doc.guestdoc_id,
+      doc.dts_doc_type_id,
+      doc.tracking_issuedby_id,
+      doc.fromuser_id,
+      doc.from_section_id,
+      doc.guest_origin_name,
+      doc.guest_origin_organization,
+      doc.logbook_page,
+      doc.datetime_first_accepted,
+      doc.actions_needed,
+      doc.file_at,
+      doc.status_id,
+      doc.old_track,
+      doc.is_active,
+      doc.for_archived,
+      doc.is_archived,
+      doc.created_at,
+      doc.updated_at,
+      doc.deleted_at
+    ]
+  );
+
+  await archiveRoutes(connection, archiveConnection, id);
+  await deleteDocumentChildren(connection, id);
+
+  await connection.execute(
+    'DELETE FROM dts_documents WHERE id = ?',
+    [id]
+  );
+}
+
+async function restoreDocumentById(connection: mysql.Connection, archiveConnection: mysql.Connection, id: number) {
+  const [rows] = await archiveConnection.execute(
+    'SELECT * FROM archived_documents WHERE original_id = ?',
+    [id]
+  );
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const doc = (rows as any)[0];
+
+  await connection.execute(
+    `INSERT INTO dts_documents (
+      id,
+      tracking_code,
+      mo_yr,
+      issued_num,
+      description,
+      guestdoc_id,
+      dts_doc_type_id,
+      tracking_issuedby_id,
+      fromuser_id,
+      from_section_id,
+      guest_origin_name,
+      guest_origin_organization,
+      logbook_page,
+      datetime_first_accepted,
+      actions_needed,
+      file_at,
+      status_id,
+      old_track,
+      is_active,
+      for_archived,
+      is_archived,
+      created_at,
+      updated_at,
+      deleted_at,
+      archived,
+      archived_at
+    )
+    VALUES (
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL
+    )`,
+    [
+      doc.original_id,
+      doc.tracking_code,
+      doc.mo_yr,
+      doc.issued_num,
+      doc.description,
+      doc.guestdoc_id,
+      doc.dts_doc_type_id,
+      doc.tracking_issuedby_id,
+      doc.fromuser_id,
+      doc.from_section_id,
+      doc.guest_origin_name,
+      doc.guest_origin_organization,
+      doc.logbook_page,
+      doc.datetime_first_accepted,
+      doc.actions_needed,
+      doc.file_at,
+      doc.status_id,
+      doc.old_track,
+      doc.is_active,
+      doc.for_archived,
+      doc.is_archived,
+      doc.created_at,
+      doc.updated_at,
+      doc.deleted_at
+    ]
+  );
+
+  await restoreRoutes(connection, archiveConnection, id);
+
+  await archiveConnection.execute(
+    'DELETE FROM archived_documents WHERE original_id = ?',
+    [id]
+  );
+}
 
 /* =========================
    PATCH (ARCHIVE / RESTORE)
@@ -698,10 +890,49 @@ export async function PATCH(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const id = Number(body?.id);
+    const ids = body?.ids; // Array of IDs for bulk operations
+    const singleId = Number(body?.id);
     const archived = Boolean(body?.archived);
 
-    if (!id) {
+    // Handle bulk operations
+    if (ids && Array.isArray(ids)) {
+      if (ids.length === 0) {
+        return NextResponse.json({ message: 'No IDs provided' }, { status: 400 });
+      }
+
+      connection = await getConnection();
+      archiveConnection = await getConnectionArchive();
+
+      await connection.beginTransaction();
+      await archiveConnection.beginTransaction();
+
+      try {
+        for (const id of ids) {
+          const numId = Number(id);
+          if (!numId) continue; // Skip invalid IDs
+
+          if (archived) {
+            await archiveDocumentById(connection, archiveConnection, numId);
+          } else {
+            await restoreDocumentById(connection, archiveConnection, numId);
+          }
+        }
+
+        await connection.commit();
+        await archiveConnection.commit();
+
+        return NextResponse.json({
+          message: `Successfully ${archived ? 'archived' : 'restored'} ${ids.length} documents`
+        });
+      } catch (error) {
+        await connection.rollback();
+        await archiveConnection.rollback();
+        throw error;
+      }
+    }
+
+    // Handle single operations (existing logic)
+    if (!singleId) {
       return NextResponse.json({ message: 'Invalid ID' }, { status: 400 });
     }
 
@@ -711,210 +942,24 @@ export async function PATCH(request: NextRequest) {
     await connection.beginTransaction();
     await archiveConnection.beginTransaction();
 
-    /* =========================
-       ARCHIVE
-    ========================= */
-    if (archived) {
-
-      const [rows] = await connection.execute(
-        'SELECT * FROM dts_documents WHERE id = ?',
-        [id]
-      );
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const doc = (rows as any)[0];
-
-
-      const [existing] = await archiveConnection.execute(
-        'SELECT id FROM archived_documents WHERE original_id = ?',
-        [id]
-      );
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      if ((existing as any[]).length > 0) {
-        throw new Error(`Document ${id} is already archived.`);
+    try {
+      if (archived) {
+        await archiveDocumentById(connection, archiveConnection, singleId);
+      } else {
+        await restoreDocumentById(connection, archiveConnection, singleId);
       }
 
-      await archiveConnection.execute(
-        `INSERT INTO archived_documents (
-          original_id,
-          tracking_code,
-          mo_yr,
-          issued_num,
-          description,
-          guestdoc_id,
-          dts_doc_type_id,
-          tracking_issuedby_id,
-          fromuser_id,
-          from_section_id,
-          guest_origin_name,
-          guest_origin_organization,
-          logbook_page,
-          datetime_first_accepted,
-          actions_needed,
-          file_at,
-          status_id,
-          old_track,
-          is_active,
-          for_archived,
-          is_archived,
-          created_at,
-          updated_at,
-          deleted_at,
-          archived,
-          archived_at
-        )
-        VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW()
-        )`,
-        [
-          doc.id,
-          doc.tracking_code,
-          doc.mo_yr,
-          doc.issued_num,
-          doc.description,
-          doc.guestdoc_id,
-          doc.dts_doc_type_id,
-          doc.tracking_issuedby_id,
-          doc.fromuser_id,
-          doc.from_section_id,
-          doc.guest_origin_name,
-          doc.guest_origin_organization,
-          doc.logbook_page,
-          doc.datetime_first_accepted,
-          doc.actions_needed,
-          doc.file_at,
-          doc.status_id,
-          doc.old_track,
-          doc.is_active,
-          doc.for_archived,
-          doc.is_archived,
-          doc.created_at,
-          doc.updated_at,
-          doc.deleted_at
-        ]
-      );
+      await connection.commit();
+      await archiveConnection.commit();
 
-      await archiveRoutes(connection, archiveConnection, id);
-      await deleteDocumentChildren(connection, id);
-
-      await connection.execute(
-        'DELETE FROM dts_documents WHERE id = ?',
-        [id]
-      );
+      return NextResponse.json({
+        message: `Successfully ${archived ? 'archived' : 'restored'} document`
+      });
+    } catch (error) {
+      await connection.rollback();
+      await archiveConnection.rollback();
+      throw error;
     }
-
-    /* =========================
-       RESTORE
-    ========================= */
-    else {
-
-      const [rows] = await archiveConnection.execute(
-        'SELECT * FROM archived_documents WHERE original_id = ?',
-        [id]
-      );
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const doc = (rows as any)[0];
-
-      await connection.execute(
-        `INSERT INTO dts_documents (
-          id,
-          tracking_code,
-          mo_yr,
-          issued_num,
-          description,
-          guestdoc_id,
-          dts_doc_type_id,
-          tracking_issuedby_id,
-          fromuser_id,
-          from_section_id,
-          guest_origin_name,
-          guest_origin_organization,
-          logbook_page,
-          datetime_first_accepted,
-          actions_needed,
-          file_at,
-          status_id,
-          old_track,
-          is_active,
-          for_archived,
-          is_archived,
-          created_at,
-          updated_at,
-          deleted_at,
-          archived,
-          archived_at
-        )
-        VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL
-        )
-        ON DUPLICATE KEY UPDATE
-          tracking_code = VALUES(tracking_code),
-          mo_yr = VALUES(mo_yr),
-          issued_num = VALUES(issued_num),
-          description = VALUES(description),
-          guestdoc_id = VALUES(guestdoc_id),
-          dts_doc_type_id = VALUES(dts_doc_type_id),
-          tracking_issuedby_id = VALUES(tracking_issuedby_id),
-          fromuser_id = VALUES(fromuser_id),
-          from_section_id = VALUES(from_section_id),
-          guest_origin_name = VALUES(guest_origin_name),
-          guest_origin_organization = VALUES(guest_origin_organization),
-          logbook_page = VALUES(logbook_page),
-          datetime_first_accepted = VALUES(datetime_first_accepted),
-          actions_needed = VALUES(actions_needed),
-          file_at = VALUES(file_at),
-          status_id = VALUES(status_id),
-          old_track = VALUES(old_track),
-          is_active = VALUES(is_active),
-          for_archived = VALUES(for_archived),
-          is_archived = VALUES(is_archived),
-          updated_at = VALUES(updated_at),
-          deleted_at = VALUES(deleted_at),
-          archived = 0,
-          archived_at = NULL
-        `,
-        [
-          doc.original_id,
-          doc.tracking_code,
-          doc.mo_yr,
-          doc.issued_num,
-          doc.description,
-          doc.guestdoc_id,
-          doc.dts_doc_type_id,
-          doc.tracking_issuedby_id,
-          doc.fromuser_id,
-          doc.from_section_id,
-          doc.guest_origin_name,
-          doc.guest_origin_organization,
-          doc.logbook_page,
-          doc.datetime_first_accepted,
-          doc.actions_needed,
-          doc.file_at,
-          doc.status_id,
-          doc.old_track,
-          doc.is_active,
-          doc.for_archived,
-          doc.is_archived,
-          doc.created_at,
-          doc.updated_at,
-          doc.deleted_at
-        ]
-      );
-      // Restore routes
-      await restoreRoutes(archiveConnection, connection, doc.original_id);
-
-      // Delete from archive after restore
-      await archiveConnection.execute(
-        'DELETE FROM archived_documents WHERE original_id = ?',
-        [id]
-      );
-    }
-
-    await connection.commit();
-    await archiveConnection.commit();
-
-    return NextResponse.json({ success: true });
 
   } catch (error) {
     console.error('PATCH error:', error);
