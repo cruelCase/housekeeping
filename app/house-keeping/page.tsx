@@ -63,9 +63,20 @@ export default function HouseKeepingPage() {
   const [isPreparingArchive, setIsPreparingArchive] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
 
+  const [showRestoreDateModal, setShowRestoreDateModal] = useState(false);
+  const [restoreScope, setRestoreScope] = useState<ArchiveScope>('month');
+  const [restoreDate, setRestoreDate] = useState('');
+  const [restoreConfirmStep, setRestoreConfirmStep] = useState<0 | 1 | 2>(0);
+  const [restoreDocsToRestore, setRestoreDocsToRestore] = useState<string[]>([]);
+  const [restoreModalMessage, setRestoreModalMessage] = useState('');
+  const [isPreparingRestore, setIsPreparingRestore] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+
   // PROGRESS STATES
   const [archiveProgress, setArchiveProgress] = useState(0);
   const [archiveProgressText, setArchiveProgressText] = useState('');
+  const [restoreProgress, setRestoreProgress] = useState(0);
+  const [restoreProgressText, setRestoreProgressText] = useState('');
 
   const [sortOrder, setSortOrder] = useState<'oldest' | 'newest'>('newest');
   const [darkMode, setDarkMode] = useState(false);
@@ -254,6 +265,102 @@ export default function HouseKeepingPage() {
     setTimeout(() => setSuccessMessage(''), 3000); // Hide after 3 seconds
   };
 
+  const normalizeRestoreValue = () => {
+    if (!restoreDate) return '';
+    if (restoreScope === 'decade') {
+      return restoreDate;
+    }
+
+    return restoreDate;
+  };
+
+  const prepareRestoreAllByDate = async () => {
+    const normalizedValue = normalizeRestoreValue();
+    if (!normalizedValue) {
+      setRestoreModalMessage('Please choose a valid ' + getArchiveDisplayLabel() + '.');
+      return;
+    }
+
+    setRestoreModalMessage('');
+    setIsPreparingRestore(true);
+
+    try {
+      const response = await fetch(
+        `/api/documents?page=1&archived=1&limit=all&filterType=${restoreScope}&filterValue=${encodeURIComponent(normalizedValue)}`
+      );
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.message ?? 'Failed to fetch archived documents for restore.');
+      }
+
+      const docsToRestore = payload.documents;
+
+      if (!docsToRestore || docsToRestore.length === 0) {
+        setRestoreModalMessage(`No archived documents found for the selected ${getArchiveDisplayLabel()}.`);
+        return;
+      }
+
+      setRestoreDocsToRestore(docsToRestore.map((doc: any) => String(doc.id)));
+      setRestoreConfirmStep(1);
+    } catch (error) {
+      console.error('prepareRestoreAllByDate error:', error);
+      setRestoreModalMessage('Failed to load documents. Please try again.');
+    } finally {
+      setIsPreparingRestore(false);
+    }
+  };
+
+  const restoreAllByDate = async () => {
+    if (restoreDocsToRestore.length === 0) return;
+
+    setIsRestoring(true);
+    setRestoreProgress(0);
+    setRestoreProgressText(`Restoring 0 of ${restoreDocsToRestore.length} documents...`);
+
+    try {
+      const success = await bulkPatchDocuments(
+        restoreDocsToRestore,
+        false,
+        (processed, total) => {
+          const percentage = Math.round((processed / total) * 100);
+          setRestoreProgress(percentage);
+          setRestoreProgressText(`Restoring ${processed} of ${total} documents...`);
+        }
+      );
+
+      if (!success) {
+        setRestoreModalMessage('Failed to restore documents. Please try again.');
+        return;
+      }
+
+      setRestoreProgress(100);
+      setRestoreProgressText(`Completed restoring ${restoreDocsToRestore.length} documents`);
+
+      resetRestoreModal();
+      setSelectedArchivedDocs([]);
+      await loadDocuments(currentPage, true);
+      setSuccessMessage(`${restoreDocsToRestore.length} Documents Restored`);
+      setTimeout(() => setSuccessMessage(''), 3000);
+    } catch (error) {
+      console.error('restoreAllByDate error:', error);
+      setRestoreModalMessage('Failed to restore documents. Please try again.');
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
+  const resetRestoreModal = () => {
+    setShowRestoreDateModal(false);
+    setRestoreScope('day');
+    setRestoreDate('');
+    setRestoreConfirmStep(0);
+    setRestoreDocsToRestore([]);
+    setRestoreModalMessage('');
+    setRestoreProgress(0);
+    setRestoreProgressText('');
+  };
+
   const selectAllArchivedCurrentPage = () => {
     setSelectedArchivedDocs((prev) => {
       const next = new Set(prev);
@@ -301,7 +408,11 @@ export default function HouseKeepingPage() {
     }
   };
 
-  const getArchiveInput = () => {
+  const getDateInput = (
+    scope: ArchiveScope,
+    currentDate: string,
+    setDate: (value: string) => void
+  ) => {
     const currentYear = new Date().getFullYear();
     const years = Array.from({ length: 30 }, (_, idx) => String(currentYear - idx));
     const decades = Array.from({ length: 10 }, (_, idx) => {
@@ -309,15 +420,15 @@ export default function HouseKeepingPage() {
       return `${start}-${start + 9}`;
     });
 
-    switch (archiveScope) {
+    switch (scope) {
       case 'month':
         return (
           <label className="block">
             <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Month</span>
             <input
               type="month"
-              value={archiveDate}
-              onChange={(e) => setArchiveDate(e.target.value)}
+              value={currentDate}
+              onChange={(e) => setDate(e.target.value)}
               className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
             />
           </label>
@@ -327,8 +438,8 @@ export default function HouseKeepingPage() {
           <label className="block">
             <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Year</span>
             <select
-              value={archiveDate}
-              onChange={(e) => setArchiveDate(e.target.value)}
+              value={currentDate}
+              onChange={(e) => setDate(e.target.value)}
               className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
             >
               <option value="">Select year</option>
@@ -345,8 +456,8 @@ export default function HouseKeepingPage() {
           <label className="block">
             <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Decade</span>
             <select
-              value={archiveDate}
-              onChange={(e) => setArchiveDate(e.target.value)}
+              value={currentDate}
+              onChange={(e) => setDate(e.target.value)}
               className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
             >
               <option value="">Select decade</option>
@@ -364,8 +475,8 @@ export default function HouseKeepingPage() {
             <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Date</span>
             <input
               type="date"
-              value={archiveDate}
-              onChange={(e) => setArchiveDate(e.target.value)}
+              value={currentDate}
+              onChange={(e) => setDate(e.target.value)}
               className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
             />
           </label>
@@ -702,44 +813,67 @@ export default function HouseKeepingPage() {
                 </div>
               ) : (
                 <div>
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold text-slate-950">
-                      Archived documents
-                    </h3>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold text-slate-950">
+                        Archived documents
+                      </h3>
+                      <p className={`mt-1 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>
+                        Search archived documents by tracking code and restore specific entries.
+                      </p>
+                    </div>
 
-                    {pageDocuments.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          onClick={selectAllArchivedCurrentPage}
-                          className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
-                        >
-                          Select All
-                        </button>
-                        <button
-                          onClick={() => setSelectedArchivedDocs([])}
-                          className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
-                        >
-                          Deselect All
-                        </button>
-                        <button
-                          onClick={restoreSelectedArchived}
-                          disabled={selectedArchivedDocs.length === 0}
-                          className="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          Restore Selected ({selectedArchivedDocs.length})
-                        </button>
-                        <button
-                            onClick={() =>
-                              setSortOrder((prev) => (prev === 'oldest' ? 'newest' : 'oldest'))
-                            }
-                            className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
-                          >
-                            {sortOrder === 'oldest' ? 'Oldest First' : 'Newest First'}
-                          </button>
-
-                      </div>
-                    )}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <input
+                        type="text"
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        placeholder="Search archived documents..."
+                        className={`w-72 rounded-full px-4 py-2 text-sm border ${theme.input}`}
+                      />
+                      <button
+                        onClick={() => {
+                          resetRestoreModal();
+                          setShowRestoreDateModal(true);
+                        }}
+                        className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                      >
+                        Restore Many
+                      </button>
+                    </div>
                   </div>
+
+                  {pageDocuments.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        onClick={selectAllArchivedCurrentPage}
+                        className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
+                      >
+                        Select All
+                      </button>
+                      <button
+                        onClick={() => setSelectedArchivedDocs([])}
+                        className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
+                      >
+                        Deselect All
+                      </button>
+                      <button
+                        onClick={restoreSelectedArchived}
+                        disabled={selectedArchivedDocs.length === 0}
+                        className="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Restore Selected ({selectedArchivedDocs.length})
+                      </button>
+                      <button
+                        onClick={() =>
+                          setSortOrder((prev) => (prev === 'oldest' ? 'newest' : 'oldest'))
+                        }
+                        className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
+                      >
+                        {sortOrder === 'oldest' ? 'Oldest First' : 'Newest First'}
+                      </button>
+                    </div>
+                  )}
 
                   {pageDocuments.length === 0 ? (
                     <p className={`mt-3 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
@@ -890,7 +1024,7 @@ export default function HouseKeepingPage() {
                     </select>
                   </label>
 
-                  <div>{getArchiveInput()}</div>
+                  <div>{getDateInput(archiveScope, archiveDate, setArchiveDate)}</div>
                 </div>
 
                 <div className="mt-6 flex justify-end gap-3">
@@ -996,6 +1130,119 @@ export default function HouseKeepingPage() {
                       </>
                     ) : (
                       'Archive Now'
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showRestoreDateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className={`w-full max-w-md rounded-3xl p-6 shadow-2xl ${theme.card}`}>
+            <h3 className={`text-xl font-semibold ${darkMode ? 'text-slate-100' : 'text-slate-950'}`}>
+              Restore Documents
+            </h3>
+
+            <p className={`mt-2 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
+              Choose how you want to restore archived documents and enter the matching date range.
+            </p>
+
+            {restoreModalMessage && (
+              <div className="mt-4 rounded-2xl bg-red-50 p-4 text-sm text-red-700">
+                {restoreModalMessage}
+              </div>
+            )}
+
+            {restoreConfirmStep === 0 && (
+              <>
+                <div className="mt-4 space-y-4">
+                  <label className="block">
+                    <span className={`text-sm font-medium ${darkMode ? 'text-slate-100' : 'text-slate-700'}`}>Restore by</span>
+                    <select
+                      value={restoreScope}
+                      onChange={(e) => {
+                        setRestoreScope(e.target.value as ArchiveScope);
+                        setRestoreDate('');
+                        setRestoreModalMessage('');
+                      }}
+                      className={`mt-2 w-full rounded-2xl px-4 py-3 text-sm ${theme.input}`}
+                    >
+                      <option value="month">Months</option>
+                      <option value="year">Years</option>
+                    </select>
+                  </label>
+
+                  <div>{getDateInput(restoreScope, restoreDate, setRestoreDate)}</div>
+                </div>
+
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    onClick={resetRestoreModal}
+                    className={`rounded-full px-4 py-2 text-sm font-semibold border ${theme.button}`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={prepareRestoreAllByDate}
+                    disabled={isPreparingRestore}
+                    className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {isPreparingRestore ? 'Loading...' : 'Continue'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {restoreConfirmStep === 1 && (
+              <>
+                <div className={`mt-4 rounded-2xl p-4 text-sm ${darkMode ? 'border-slate-800 bg-slate-950 text-slate-100' : 'border border-slate-200 bg-slate-50 text-slate-700'}`}>
+                  <p className={`font-semibold ${darkMode ? 'text-slate-100' : 'text-slate-900'}`}>
+                    Confirm restore of {restoreDocsToRestore.length} documents matching {restoreDate}
+                  </p>
+                  <p className={`mt-2 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
+                    This action cannot be undone. All selected archived documents will be restored.
+                  </p>
+                </div>
+
+                {isRestoring && (
+                  <div className="mt-6">
+                    <div className={`mb-2 text-sm font-medium ${darkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                      {restoreProgressText}
+                    </div>
+                    <div className={`h-2 w-full rounded-full ${darkMode ? 'bg-slate-800' : 'bg-slate-200'}`}>
+                      <div
+                        className="h-2 rounded-full bg-slate-900 transition-all duration-300 ease-out"
+                        style={{ width: `${restoreProgress}%` }}
+                      />
+                    </div>
+                    <div className={`mt-1 text-xs ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      {restoreProgress}% complete
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    onClick={() => setRestoreConfirmStep(0)}
+                    className={`rounded-full px-4 py-2 text-sm font-semibold border ${theme.button}`}
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={restoreAllByDate}
+                    disabled={isRestoring}
+                    className="inline-flex items-center justify-center rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isRestoring ? (
+                      <>
+                        <span className="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                        Restoring...
+                      </>
+                    ) : (
+                      'Restore Now'
                     )}
                   </button>
                 </div>

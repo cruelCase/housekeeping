@@ -873,7 +873,7 @@ async function restoreDocumentById(connection: mysql.Connection, archiveConnecti
     ]
   );
 
-  await restoreRoutes(connection, archiveConnection, id);
+  await restoreRoutes(archiveConnection, connection, id);
 
   await archiveConnection.execute(
     'DELETE FROM archived_documents WHERE original_id = ?',
