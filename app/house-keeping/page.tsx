@@ -65,7 +65,10 @@ export default function HouseKeepingPage() {
 
   const [showRestoreDateModal, setShowRestoreDateModal] = useState(false);
   const [restoreScope, setRestoreScope] = useState<ArchiveScope>('month');
-  const [restoreDate, setRestoreDate] = useState('');
+  const [restoreDate, setRestoreDate] = useState(() => {
+    const today = new Date();
+    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+  });
   const [restoreConfirmStep, setRestoreConfirmStep] = useState<0 | 1 | 2>(0);
   const [restoreDocsToRestore, setRestoreDocsToRestore] = useState<string[]>([]);
   const [restoreModalMessage, setRestoreModalMessage] = useState('');
@@ -82,9 +85,9 @@ export default function HouseKeepingPage() {
   const [darkMode, setDarkMode] = useState(false);
 
   const theme = {
-    page: darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900',
-    card: darkMode ? 'bg-slate-950 border-slate-800 text-slate-100' : 'bg-white border-slate-200 text-slate-900',
-    secondaryCard: darkMode ? 'bg-slate-950 border-slate-800 text-slate-100' : 'bg-slate-50 border-slate-200 text-slate-900',
+    page: darkMode ? 'bg-slate-950 text-slate-100' : 'bg-white text-slate-900',
+    card: darkMode ? 'bg-slate-950 border-slate-800 text-slate-100' : 'bg-white border-sky-200 text-slate-900',
+    secondaryCard: darkMode ? 'bg-slate-950 border-slate-800 text-slate-100' : 'bg-sky-50 border-sky-200 text-slate-900',
     input: darkMode ? 'bg-slate-950 text-slate-100 border-slate-800 placeholder-slate-400' : 'bg-slate-50 text-slate-900 border-slate-300 placeholder-slate-500',
     button: darkMode ? 'bg-slate-950 text-slate-100 border-slate-800 hover:bg-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100',
     pill: darkMode ? 'bg-black border-slate-800 text-slate-100' : 'bg-slate-200 border-slate-300 text-slate-700',
@@ -94,11 +97,12 @@ export default function HouseKeepingPage() {
   page: number,
   archived: boolean,
   search = '',
-  dateFilter = ''
+  dateFilter = '',
+  sort = 'newest'
 ): Promise<DocumentsResponse | null> => {
   try {
     const response = await fetch(
-      `/api/documents?page=${page}&archived=${archived ? 1 : 0}&search=${encodeURIComponent(search)}&date=${encodeURIComponent(dateFilter)}`
+      `/api/documents?page=${page}&archived=${archived ? 1 : 0}&search=${encodeURIComponent(search)}&date=${encodeURIComponent(dateFilter)}&sort=${sort}`
     );
 
     const payload = await response.json();
@@ -117,9 +121,10 @@ export default function HouseKeepingPage() {
 
   const loadDocuments = useCallback(async (
     page = 1,
-    archived = activeTab === 'archived'
+    archived = activeTab === 'archived',
+    sort = sortOrder
   ) => {
-    const payload = await fetchDocuments(page, archived, searchTerm, appliedDateFilter);
+    const payload = await fetchDocuments(page, archived, searchTerm, appliedDateFilter, sort);
 
     if (!payload) {
       setDocuments([]);
@@ -143,12 +148,12 @@ export default function HouseKeepingPage() {
     setArchivedCount(payload.archivedCount);
     setTotalPages(payload.totalPages || 1);
     setCurrentPage(payload.page);
-  }, [activeTab, searchTerm, appliedDateFilter]);
+  }, [activeTab, searchTerm, appliedDateFilter, sortOrder]);
 
   useEffect(() => {
     setCurrentPage(1);
-    loadDocuments(1, activeTab === 'archived');
-  }, [searchTerm, activeTab, appliedDateFilter, loadDocuments]);
+    loadDocuments(1, activeTab === 'archived', sortOrder);
+  }, [searchTerm, activeTab, appliedDateFilter, sortOrder, loadDocuments]);
 
   const addDocument = async () => {
     if (!newDocName.trim()) return;
@@ -301,6 +306,7 @@ export default function HouseKeepingPage() {
         return;
       }
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setRestoreDocsToRestore(docsToRestore.map((doc: any) => String(doc.id)));
       setRestoreConfirmStep(1);
     } catch (error) {
@@ -352,8 +358,9 @@ export default function HouseKeepingPage() {
 
   const resetRestoreModal = () => {
     setShowRestoreDateModal(false);
-    setRestoreScope('day');
-    setRestoreDate('');
+    setRestoreScope('month');
+    const today = new Date();
+    setRestoreDate(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`);
     setRestoreConfirmStep(0);
     setRestoreDocsToRestore([]);
     setRestoreModalMessage('');
@@ -520,6 +527,7 @@ export default function HouseKeepingPage() {
         return;
       }
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setArchiveDocsToArchive(docsToArchive.map((doc: any) => String(doc.id)));
       setArchiveConfirmStep(1);
     } catch (error) {
@@ -749,7 +757,7 @@ export default function HouseKeepingPage() {
                     resetArchiveModal();
                     setShowArchiveDateModal(true);
                   }}
-                  className="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white"
+                  className="rounded-full bg-sky-500 px-4 py-2 text-sm font-semibold text-white"
                 >
                   Archive Many
                 </button>
@@ -772,7 +780,7 @@ export default function HouseKeepingPage() {
                       {filteredDocuments.map((doc) => (
                         <div
                           key={doc.id}
-                          className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+                          className="flex flex-col gap-3 rounded-3xl border border-sky-500 bg-sky-100 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
                         >
                           <div className="flex items-center gap-3">
                             <input
@@ -793,7 +801,7 @@ export default function HouseKeepingPage() {
                               <p className="font-semibold text-slate-950">
                                 {doc.name}
                               </p>
-                              <p className={`text-sm ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>
+                              <p className={`text-sm ${darkMode ? 'text-slate-800' : 'text-slate-800'}`}>
                                 Created{' '}
                                 {new Date(doc.createdAt).toLocaleDateString()}
                               </p>
@@ -844,7 +852,7 @@ export default function HouseKeepingPage() {
                   </div>
 
                   {pageDocuments.length > 0 && (
-                    <div className="mt-4 flex flex-wrap gap-2">
+                    <div className="mt-4 mb-4 flex flex-wrap gap-2">
                       <button
                         onClick={selectAllArchivedCurrentPage}
                         className={`rounded-full px-4 py-2 text-sm font-semibold ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'}`}
@@ -884,7 +892,7 @@ export default function HouseKeepingPage() {
                       {sortedArchivedDocuments.map((doc) => (
                         <div
                           key={doc.id}
-                          className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
+                          className="flex flex-col gap-3 rounded-3xl border border-sky-400 bg-sky-100 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between"
                         >
                           <div className="flex items-center gap-3">
                             <input
@@ -906,7 +914,7 @@ export default function HouseKeepingPage() {
                               {doc.name}
                             </p>
 
-<div className={`space-y-1 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>
+<div className={`space-y-1 text-sm ${darkMode ? 'text-slate-700' : 'text-slate-700'}`}>
                               <p>
                                 Created{' '}
                                 {new Date(doc.createdAt).toLocaleDateString()}
@@ -926,7 +934,7 @@ export default function HouseKeepingPage() {
 
                           <button
                             onClick={() => restoreDocument(doc.id)}
-                            className="inline-flex items-center justify-center rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700"
+                            className="inline-flex items-center justify-center rounded-full bg-sky-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-sky-700"
                           >
                             Restore
                           </button>
