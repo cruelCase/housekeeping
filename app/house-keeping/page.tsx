@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 
 interface Document {
   id: string;
@@ -25,17 +25,20 @@ interface DocumentsResponse {
   archivedCount: number;
   page: number;
   totalPages: number;
+  totalFiltered: number;
 }
 
 export default function HouseKeepingPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [activeTab, setActiveTab] = useState<'active' | 'archived'>('active');
-  const [newDocName, setNewDocName] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [totalDocuments, setTotalDocuments] = useState(0);
   const [activeCount, setActiveCount] = useState(0);
   const [archivedCount, setArchivedCount] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
+  const [totalFiltered, setTotalFiltered] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   // FILTER STATES
   const [selectedDate, setSelectedDate] = useState('');
@@ -83,6 +86,8 @@ export default function HouseKeepingPage() {
 
   const [sortOrder, setSortOrder] = useState<'oldest' | 'newest'>('newest');
   const [darkMode, setDarkMode] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSlowLoading, setIsSlowLoading] = useState(false);
 
   const theme = {
     page: darkMode ? 'bg-slate-950 text-slate-100' : 'bg-white text-slate-900',
@@ -93,16 +98,21 @@ export default function HouseKeepingPage() {
     pill: darkMode ? 'bg-black border-slate-800 text-slate-100' : 'bg-slate-200 border-slate-300 text-slate-700',
   };
 
+  const scrollToTop = () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const fetchDocuments = async (
   page: number,
   archived: boolean,
   search = '',
   dateFilter = '',
-  sort = 'newest'
+  sort = 'newest',
+  limit = 10
 ): Promise<DocumentsResponse | null> => {
   try {
     const response = await fetch(
-      `/api/documents?page=${page}&archived=${archived ? 1 : 0}&search=${encodeURIComponent(search)}&date=${encodeURIComponent(dateFilter)}&sort=${sort}`
+      `/api/documents?page=${page}&archived=${archived ? 1 : 0}&search=${encodeURIComponent(search)}&date=${encodeURIComponent(dateFilter)}&sort=${sort}&limit=${limit}`
     );
 
     const payload = await response.json();
@@ -118,67 +128,99 @@ export default function HouseKeepingPage() {
   }
 };
 
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const documentPageSize = 10;
 
   const loadDocuments = useCallback(async (
     page = 1,
     archived = activeTab === 'archived',
-    sort = sortOrder
+    sort = sortOrder,
+    append = false
   ) => {
-    const payload = await fetchDocuments(page, archived, searchTerm, appliedDateFilter, sort);
+    setIsLoading(true);
+    setIsSlowLoading(false);
+    const slowTimer = window.setTimeout(() => setIsSlowLoading(true), 700);
+    const minLoadTime = 400;
+    const requestStart = performance.now();
 
-    if (!payload) {
-      setDocuments([]);
-      setTotalDocuments(0);
-      setActiveCount(0);
-      setArchivedCount(0);
-      return;
+    try {
+      const payload = await fetchDocuments(
+        page,
+        archived,
+        searchTerm,
+        appliedDateFilter,
+        sort,
+        documentPageSize
+      );
+
+      const elapsed = performance.now() - requestStart;
+      if (elapsed < minLoadTime) {
+        await pause(minLoadTime - elapsed);
+      }
+
+      if (!payload) {
+        if (!append) setDocuments([]);
+        setTotalDocuments(0);
+        setActiveCount(0);
+        setArchivedCount(0);
+        setTotalFiltered(0);
+        setHasMore(false);
+        return;
+      }
+
+      const docs = payload.documents.map((row) => ({
+        id: String(row.id),
+        name: row.tracking_code,
+        createdAt: row.created_at,
+        archived: Boolean(row.archived),
+        archivedAt: row.archived_at,
+      }));
+
+      setDocuments((prev) => (append ? [...prev, ...docs] : docs));
+      setTotalDocuments(payload.totalDocuments);
+      setActiveCount(payload.activeCount);
+      setArchivedCount(payload.archivedCount);
+      setCurrentPage(payload.page);
+      setTotalFiltered(payload.totalFiltered || docs.length);
+      setHasMore(payload.page < (payload.totalPages || 1));
+    } finally {
+      clearTimeout(slowTimer);
+      setIsSlowLoading(false);
+      setIsLoading(false);
+      setIsInitialLoad(false);
     }
-
-    const docs = payload.documents.map((row) => ({
-      id: String(row.id),
-      name: row.tracking_code,
-      createdAt: row.created_at,
-      archived: Boolean(row.archived),
-      archivedAt: row.archived_at,
-    }));
-
-    setDocuments(docs);
-    setTotalDocuments(payload.totalDocuments);
-    setActiveCount(payload.activeCount);
-    setArchivedCount(payload.archivedCount);
-    setTotalPages(payload.totalPages || 1);
-    setCurrentPage(payload.page);
   }, [activeTab, searchTerm, appliedDateFilter, sortOrder]);
 
   useEffect(() => {
     setCurrentPage(1);
-    loadDocuments(1, activeTab === 'archived', sortOrder);
+    setDocuments([]);
+    setHasMore(true);
+    setTotalFiltered(0);
+    setIsInitialLoad(true);
+    loadDocuments(1, activeTab === 'archived', sortOrder, false);
   }, [searchTerm, activeTab, appliedDateFilter, sortOrder, loadDocuments]);
 
-  const addDocument = async () => {
-    if (!newDocName.trim()) return;
+  useEffect(() => {
+    const anchor = loadMoreRef.current;
+    if (!anchor) return;
 
-    try {
-      const response = await fetch('/api/documents', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ name: newDocName.trim() }),
-      });
-
-      const payload = await response.json();
-
-      if (!response.ok) {
-        throw new Error(payload?.message ?? 'Failed to create document.');
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry.isIntersecting && !isLoading && hasMore) {
+          loadDocuments(currentPage + 1, activeTab === 'archived', sortOrder, true);
+        }
+      },
+      {
+        rootMargin: '200px',
       }
+    );
 
-      setNewDocName('');
-      await loadDocuments(1, activeTab === 'archived');
-    } catch (error) {
-      console.error('addDocument error:', error);
-    }
-  };
+    observer.observe(anchor);
+
+    return () => observer.disconnect();
+  }, [currentPage, activeTab, sortOrder, isLoading, hasMore, loadDocuments]);
 
   const patchDocument = async (
     id: string,
@@ -585,11 +627,6 @@ export default function HouseKeepingPage() {
     setSearchTerm('');
   };
 
-  const pageCount = totalPages;
-
-  const hasPreviousPage = currentPage > 1;
-  const hasNextPage = currentPage < pageCount;
-
   const pageDocuments = documents;
 
   const sortedArchivedDocuments = useMemo(() => {
@@ -610,6 +647,22 @@ export default function HouseKeepingPage() {
 
     return pageDocuments;
   }, [pageDocuments, activeTab]);
+
+  const documentSkeletons = Array.from({ length: 5 }, (_, index) => (
+    <div
+      key={index}
+      className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-slate-100 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between animate-pulse"
+    >
+      <div className="flex items-center gap-3">
+        <div className="h-5 w-5 rounded bg-slate-300" />
+        <div className="space-y-2">
+          <div className="h-4 w-40 rounded bg-slate-300" />
+          <div className="h-3 w-28 rounded bg-slate-200" />
+        </div>
+      </div>
+      <div className="h-10 w-24 rounded-full bg-slate-300" />
+    </div>
+  ));
 
   const applyDateFilter = () => {
     setAppliedDateFilter(selectedDate);
@@ -770,8 +823,17 @@ export default function HouseKeepingPage() {
                   <h3 className="text-lg font-semibold text-slate-950">
                     Active documents
                   </h3>
+                  {isSlowLoading && (
+                    <p className="mt-2 text-sm text-amber-700">
+                      Still loading documents… this may take a moment.
+                    </p>
+                  )}
 
-                  {filteredDocuments.length === 0 ? (
+                  {isInitialLoad && isLoading ? (
+                    <div className="space-y-3">
+                      {documentSkeletons}
+                    </div>
+                  ) : filteredDocuments.length === 0 ? (
                     <p className={`mt-3 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                       No active documents found.
                     </p>
@@ -829,6 +891,11 @@ export default function HouseKeepingPage() {
                       <p className={`mt-1 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-500'}`}>
                         Search archived documents by tracking code and restore specific entries.
                       </p>
+                      {isSlowLoading && (
+                        <p className="mt-2 text-sm text-amber-700">
+                          Still loading archived documents… thank you for waiting.
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3">
@@ -883,7 +950,11 @@ export default function HouseKeepingPage() {
                     </div>
                   )}
 
-                  {pageDocuments.length === 0 ? (
+                  {isInitialLoad && isLoading ? (
+                    <div className="space-y-3">
+                      {documentSkeletons}
+                    </div>
+                  ) : pageDocuments.length === 0 ? (
                     <p className={`mt-3 text-sm ${darkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                       No archived documents yet.
                     </p>
@@ -940,44 +1011,29 @@ export default function HouseKeepingPage() {
                           </button>
                         </div>
                       ))}
+                      {isLoading && !isInitialLoad && (
+                        <div className="space-y-3">
+                          {documentSkeletons.slice(0, 2)}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
               )}
             </div>
 
-<div className={`mt-6 flex items-center justify-between rounded-3xl px-4 py-3 text-sm ${darkMode ? 'border-slate-800 bg-slate-950 text-slate-100' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+            <div className={`mt-6 rounded-3xl px-4 py-3 text-sm ${darkMode ? 'border-slate-800 bg-slate-950 text-slate-100' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
               <span>
-                Page {currentPage} of {pageCount || 1}
+                Showing {documents.length} of {totalFiltered || totalDocuments} documents
               </span>
+            </div>
 
-              <div className="flex gap-2">
-                <button
-                  onClick={() => {
-                    if (!hasPreviousPage) return;
-                    const nextPage = currentPage - 1;
-                    setCurrentPage(nextPage);
-                    loadDocuments(nextPage, activeTab === 'archived');
-                  }}
-                  disabled={!hasPreviousPage}
-                  className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'}`}
-                >
-                  Previous
-                </button>
-
-                <button
-                  onClick={() => {
-                    if (!hasNextPage) return;
-                    const nextPage = currentPage + 1;
-                    setCurrentPage(nextPage);
-                    loadDocuments(nextPage, activeTab === 'archived');
-                  }}
-                  disabled={!hasNextPage}
-                  className={`rounded-full px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${darkMode ? 'border-slate-700 bg-slate-950 text-slate-100 hover:bg-slate-900' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'}`}
-                >
-                  Next
-                </button>
-              </div>
+            <div ref={loadMoreRef} className={`mt-4 rounded-3xl px-4 py-6 text-center text-sm ${darkMode ? 'border-slate-800 bg-slate-950 text-slate-100' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+              {isLoading && !isInitialLoad
+                ? 'Loading more documents...'
+                : hasMore
+                ? 'Scroll to load more documents'
+                : 'No more documents to load'}
             </div>
           </section>
 
@@ -1259,6 +1315,15 @@ export default function HouseKeepingPage() {
           </div>
         </div>
       )}
+
+      <button
+        type="button"
+        onClick={scrollToTop}
+        className="fixed bottom-5 right-5 z-50 inline-flex h-12 w-12 items-center justify-center rounded-full bg-slate-900 text-white shadow-lg transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-400"
+        aria-label="Back to top"
+      >
+        ↑
+      </button>
     </div>
   );
 }
